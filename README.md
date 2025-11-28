@@ -329,136 +329,51 @@ flowchart TD
 
 ```
 
-🚀 Instalación y Uso
+## 🚀 Instalación y Uso
 Prerrequisitos
 Python 3.9 o superior.
 
-1. Clonar el repositorio
+### 1. Clonar el repositorio
 
 ```Bash
 git clone [https://github.com/tu-usuario/sistema-hidrologico.git](https://github.com/tu-usuario/sistema-hidrologico.git)
 cd sistema-hidrologico
 ```
-2. Instalar dependencias
 
-Método Rápido (Archivo YAML)
-Este es el método más recomendado. Copia el siguiente bloque y guárdalo en un archivo llamado environment.yml en la raíz de tu proyecto:
+### 2. Crear el archivo de entorno
+#### ⚙️ Configuración del Entorno (Anaconda) e instalar dependencias
 
-```YAML
+
+Para garantizar la compatibilidad y estabilidad del sistema, se proporciona un archivo de configuración con las versiones exactas de todas las librerías utilizadas.
+
+Método Rápido (Archivo YAML) este es el método más recomendado. Copia el siguiente bloque y guárdalo en un archivo llamado environment.yml en la raíz de tu proyecto:
+Crea un archivo llamado `environment.yml` en la raíz del proyecto y pega el siguiente contenido:
+
+```yaml
 name: hidro_env
 channels:
   - defaults
 dependencies:
-  - altgraph=0.17.4
-  - blas=1.0
-  - bottleneck=1.4.2
-  - branca=0.8.1
-  - brotlicffi=1.1.0.0
-  - bzip2=1.0.8
-  - ca-certificates=2025.11.4
-  - certifi=2025.10.5
-  - cffi=2.0.0
-  - charset-normalizer=3.4.4
-  - console_shortcut=0.1.1
-  - cython=3.1.4
-  - expat=2.7.3
-  - folium=0.20.0
-  - fonttools=4.60.1
-  - freetype=2.13.3
-  - icc_rt=2022.1.0
-  - idna=3.11
-  - intel-openmp=2025.0.0
-  - jinja2=3.1.6
-  - joblib=1.5.2
-  - jpeg=9f
-  - lcms2=2.16
-  - lerc=3.0
-  - libdeflate=1.17
-  - libffi=3.4.4
-  - libpng=1.6.50
-  - libtiff=4.5.1
-  - libwebp-base=1.3.2
-  - libzlib=1.3.1
-  - lz4-c=1.9.4
-  - matplotlib-base=3.10.6
-  - mkl=2025.0.0
-  - mkl-service=2.5.2
-  - mkl_fft=2.1.1
-  - mkl_random=1.3.0
-  - numexpr=2.14.1
-  - numpy=1.26.4
-  - numpy-base=1.26.4
-  - openjpeg=2.5.2
-  - openssl=3.0.18
-  - packaging=25.0
-  - pandas=2.3.3
-  - patsy=1.0.1
-  - pefile=2023.2.7
-  - pip=25.2
-  - pmdarima=2.0.4
-  - powershell_shortcut=0.0.1
-  - pycparser=2.23
-  - pyinstaller=6.12.0
-  - pyinstaller-hooks-contrib=2025.1
-  - pysocks=1.7.1
   - python=3.11.14
-  - python-dateutil=2.9.0post0
-  - python-tzdata=2025.2
-  - pytz=2025.2
-  - pywin32-ctypes=0.2.2
-  - requests=2.32.5
-  - scikit-learn=1.7.1
-  - scikit-plot=0.3.7
+  - pandas=2.3.3
+  - numpy=1.26.4
   - scipy=1.16.3
-  - setuptools=80.9.0
-  - six=1.17.0
-  - sqlite=3.51.0
+  - matplotlib-base=3.10.6
+  - scikit-learn=1.7.1
   - statsmodels=0.14.5
-  - tbb=2022.0.0
-  - tbb-devel=2022.0.0
-  - threadpoolctl=3.5.0
-  - tk=8.6.15
-  - tzdata=2025b
-  - ucrt=10.0.22621.0
-  - urllib3=2.5.0
-  - vc=14.3
-  - vc14_runtime=14.44.35208
-  - vs2015_runtime=14.44.35208
-  - wheel=0.45.1
-  - win_inet_pton=1.1.0
-  - xyzservices=2025.4.0
-  - xz=5.6.4
-  - zlib=1.3.1
-  - zstd=1.5.7
+  - pmdarima=2.0.4
+  - joblib=1.5.2
+  - openjpeg=2.5.2
+  - pillow=12.0.0
+  - pip=25.2
+  - folium=0.20.0
   - pip:
-      - anyio==4.11.0
-      - arrow==1.4.0
-      - binaryornot==0.4.4
-      - chardet==5.2.0
-      - colorama==0.4.6
-      - contourpy==1.3.3
-      - cycler==0.12.1
-      - flet==0.28.3
-      - flet-charts==0.2.0.dev534
-      - flet-cli==0.28.3
-      - flet-desktop==0.28.3
-      - flet-web==0.28.3
-      - flet-webview==0.1.0
-      - h11==0.16.0
-      - httpx==1.0.dev3
-      - kiwisolver==1.4.10rc0
-      - markupsafe==3.0.3
-      - matplotlib==3.10.7
-      - msgpack==1.1.2
-      - pillow==12.0.0
-      - pygments==2.19.2
-      - pyparsing==3.3.0a1
-      - python-slugify==8.0.4
-      - pyyaml==6.0.3
-      - sniffio==1.3.1
-      - tabulate==0.9.0
-      - text-unidecode==1.3
-      - toml==0.10.2
+    - flet==0.28.3
+    - flet-charts==0.2.0.dev534
+    - tabulate==0.9.0
+    - geopy==2.4.1  # Asegúrate de agregar geopy si no estaba en la lista automática pero se usa en el código
+    - pyyaml==6.0.3
+    - pyinstaller==6.12.0
 ```
 Luego, ejecuta en tu terminal (Anaconda Prompt o Anaconda Terminal):
 
@@ -470,13 +385,13 @@ conda env create -f environment.yml
 conda activate hidro_env
 ```
 
-3. Ejecutar la aplicación
+### 3. Ejecutar la aplicación
 Para iniciar la interfaz gráfica:
 
 ```Bash
 python main.py
 ```
-4. Creración de ejecutable
+### 4. Creración de ejecutable
 Para ejecutar el comando o script desde el Anaconda Prompt (Anaconda CMD) o Anaconda Shell, y asegurarte de que se ejecuta desde la carpeta raíz de tu entorno de proyecto, navega usando cd
 
 ```Bash
@@ -500,7 +415,7 @@ Para ejecutar el comando o script desde el Anaconda Prompt (Anaconda CMD) o Anac
  ┗ 📜 gastos_app.py        # UI y Lógica de Racional/Chow
 ```
 
-🛠️ Tecnologías Utilizadas
+## 🛠️ Tecnologías Utilizadas
 Frontend: Flet (Framework basado en Flutter para Python).
 
 Manipulación de Datos: Pandas, NumPy.
@@ -512,7 +427,7 @@ Estadística Avanzada: Scipy Stats, Statsmodels, Pmdarima (Auto-Arima), Scikit-l
 Visualización: Matplotlib, Seaborn (Renderizado a Base64 para integración en Flet).
 
 
-⚠️ Disclaimer
+## ⚠️ Disclaimer
 Este software es una herramienta de apoyo para ingeniería civil y geofísica. Los resultados hidrológicos (caudales, curvas, tiempos de concentración) deben ser validados por un especialista considerando las condiciones particulares de la cuenca y la normativa local vigente (ej. CONAGUA en México, o normativas locales correspondientes).
 
 Versión: 5.0.1
