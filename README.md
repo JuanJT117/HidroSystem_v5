@@ -5,7 +5,7 @@ Aplicación Python para el calculo hidrológico , imputación y análisis de cue
 ![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Flet Framework](https://img.shields.io/badge/frontend-Flet-green)
 ![Status](https://img.shields.io/badge/status-Stable-success)
-![License](https://img.shields.io/badge/license-MIT-lightgrey)
+![License](https://img.shields.io/badge/license-GPL--3.0-blue)
 
 Aplicación de escritorio integral para el procesamiento, análisis estadístico y diseño hidrológico. Desarrollada en **Python** utilizando **Flet** para una interfaz moderna (estilo Cyberpunk/Matrix) y librerías científicas robustas para el cálculo matemático.
 
