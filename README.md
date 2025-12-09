@@ -404,10 +404,10 @@ flet pack main.py --name "HidroSystem_v6.2.2" --icon "assets/icon.ico" --add-dat
 
 ```Plaintext
 📦 sistema-hidrologico
- ┣ 📜 main.py                # Punto de entrada y Menú Principal (Estilo Matrix)
- ┣ 📂 assets                 # Imágenes y recursos estáticos
+ ┣ 📜 main.py              # Punto de entrada y Menú Principal (Estilo Matrix)
+ ┣ 📂 assets               # Imágenes y recursos estáticos
  ┃ ┣ 💧 icon.ico           # icono
- ┃ ┗ 📜 path19.jpg           # Logo
+ ┃ ┗ 📜 path19.jpg         # Logo
  ┣ 📜 imputacion_app.py    # UI Imputación
  ┣ 📜 imputacion_logic.py  # Algoritmos IDW/MLR/ARIMA
  ┣ 📜 analisis_app.py      # UI Análisis
@@ -424,7 +424,7 @@ Manipulación de Datos: Pandas, NumPy.
 
 Análisis Geoespacial: Geopy, Folium.
 
-Estadística Avanzada: Scipy Stats, Statsmodels, Pmdarima (Auto-Arima), Scikit-learn.
+Estadística Avanzada: Scipy Stats, Statsmodels, SARIMAX (Auto-Arima), Scikit-learn.
 
 Visualización: Matplotlib, Seaborn (Renderizado a Base64 para integración en Flet).
 
@@ -432,4 +432,4 @@ Visualización: Matplotlib, Seaborn (Renderizado a Base64 para integración en F
 ## ⚠️ Disclaimer
 Este software es una herramienta de apoyo para ingeniería civil y geofísica. Los resultados hidrológicos (caudales, curvas, tiempos de concentración) deben ser validados por un especialista considerando las condiciones particulares de la cuenca y la normativa local vigente (ej. CONAGUA en México, o normativas locales correspondientes).
 
-Versión: 5.0.1
+Versión: 6.2.2
