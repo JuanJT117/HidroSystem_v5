@@ -1,232 +1,374 @@
 import flet as ft
+import matplotlib
+# --- CRÍTICO: Forzar backend no interactivo globalmente al inicio ---
+matplotlib.use('Agg') 
+
 import imputacion_app
 import analisis_app
 import gastos_app
 import os
+import pickle
+import time
+import traceback
+import zipfile
+import json
+import numpy as np
+import pandas as pd
 
-# --- ESTILOS PERSONALIZADOS (CONSTANTES) ---
-COLOR_FONDO = "#050505"       # Casi negro
-COLOR_SUPERFICIE = "#111111"  # Gris muy oscuro para contenedores
-COLOR_ACENTO = "#00ff41"      # Verde Matrix clásico
-COLOR_TEXTO = "#e0e0e0"       # Blanco suave
-COLOR_GRIS_CLARO = "#BDBDBD"  # Reemplazo de Grey 400
-COLOR_GRIS_MEDIO = "#9E9E9E"  # Reemplazo de Grey 500
-
+# --- CONFIGURACIÓN Y ESTILOS ---
+COLOR_FONDO = "#050505"
+COLOR_SUPERFICIE = "#111111"
+COLOR_ACENTO = "#00ff41"
+COLOR_TEXTO = "#e0e0e0"
+COLOR_GRIS_CLARO = "#BDBDBD"
+COLOR_GRIS_MEDIO = "#9E9E9E"
 FUENTE_PRINCIPAL = "Roboto Mono"
 
-# --- HELPER PARA OPACIDAD ---
-def add_opacity(hex_color, opacity):
-    """Agrega canal Alpha a un color Hex (#RRGGBB -> #AARRGGBB)"""
-    if not hex_color.startswith("#"):
-        return hex_color 
+# --- LISTA MAESTRA DE PERSISTENCIA ---
+SESSION_KEYS_TO_PERSIST = [
+    # 1. IMPUTACIÓN
+    "imput_folder_path", "imput_output_folder", "imput_station_files", "imput_map_path",
+    "df_imputado_resultado", 
     
+    # 2. ANÁLISIS
+    "df_procesado", "df_filtrado", "df_estadisticas",
+    "df_homogeneidad", "df_acf", "df_ajustes", "df_weibull", 
+    "df_maximos_mensuales", "best_fit_name",
+    "df_altura", "df_intensidad", 
+    
+    # 3. GASTOS
+    "datos_cuencas_config", "df_cuencas_base", "df_cotas", "df_hms", 
+    "df_intensidad_gastos", "df_altura_gastos", 
+    "res_racional", "res_chow", "df_variables"
+]
+
+# --- UTILERÍAS VISUALES ---
+
+def add_opacity(hex_color, opacity):
+    if not hex_color.startswith("#"): return hex_color 
     hex_color = hex_color.lstrip("#")
     alpha = int(opacity * 255)
     return f"#{alpha:02x}{hex_color}"
 
-# --- COMPONENTES UI PERSONALIZADOS (ESTILO MATRIX) ---
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer): return int(obj)
+        if isinstance(obj, np.floating): return float(obj)
+        if isinstance(obj, np.ndarray): return obj.tolist()
+        return super(NumpyEncoder, self).default(obj)
 
 class MatrixButton(ft.Container):
-    """Botón personalizado con estilo Cyberpunk/Terminal"""
-    def __init__(self, text, icon, on_click):
+    """Botón con estilo Cyberpunk original y capacidad de BLOQUEO."""
+    def __init__(self, text, icon, on_click, width=450, color=COLOR_ACENTO):
         super().__init__()
         self.on_click_action = on_click
-        self.content = ft.Row(
-            [
-                ft.Icon(icon, color=COLOR_ACENTO),
-                ft.Text(text, color=COLOR_ACENTO, size=16, font_family=FUENTE_PRINCIPAL, weight="bold"),
-            ],
-            alignment=ft.MainAxisAlignment.START,
-        )
-        self.padding = 20
-        self.border = ft.border.all(1, COLOR_ACENTO)
-        self.border_radius = 0 # Bordes cuadrados
+        self.base_color = color
+        self.is_locked = False
         
-        self.bgcolor = add_opacity(COLOR_ACENTO, 0.05) 
+        self.content = ft.Row([
+            ft.Icon(icon, color=color),
+            ft.Text(text, color=color, size=16, font_family=FUENTE_PRINCIPAL, weight="bold"),
+        ], alignment=ft.MainAxisAlignment.START)
         
+        self.padding = 10
+        self.border = ft.border.all(1, color)
+        self.bgcolor = add_opacity(color, 0.05) 
         self.on_click = self.animar_click
-        self.on_hover = self.animar_hover
-        
+        self.on_hover = lambda e: self.animar_hover(e, color)
         self.animate = ft.Animation(300, ft.AnimationCurve.EASE_OUT)
-        
-        self.width = 450
-        self.height = 70
+        self.width = width
+        self.height = 60
 
-    def animar_hover(self, e):
-        if e.data == "true":
-            self.bgcolor = add_opacity(COLOR_ACENTO, 0.2)
-            self.content.controls[1].color = "white" 
-            self.border = ft.border.all(2, COLOR_ACENTO) 
+    def toggle_lock(self, locked: bool):
+        self.is_locked = locked
+        if locked:
+            self.opacity = 0.5
+            self.border = ft.border.all(1, "grey")
+            self.content.controls[0].color = "grey"
+            self.content.controls[1].color = "grey"
         else:
-            self.bgcolor = add_opacity(COLOR_ACENTO, 0.05)
-            self.content.controls[1].color = COLOR_ACENTO
-            self.border = ft.border.all(1, COLOR_ACENTO)
+            self.opacity = 1.0
+            self.border = ft.border.all(1, self.base_color)
+            self.content.controls[0].color = self.base_color
+            self.content.controls[1].color = self.base_color
+        self.update()
+
+    def animar_hover(self, e, color):
+        if self.is_locked: return
+        if e.data == "true":
+            self.bgcolor = add_opacity(color, 0.2)
+            self.content.controls[1].color = "white" 
+            self.border = ft.border.all(2, color) 
+        else:
+            self.bgcolor = add_opacity(color, 0.05)
+            self.content.controls[1].color = color
+            self.border = ft.border.all(1, color)
         self.update()
 
     def animar_click(self, e):
-        if self.on_click_action:
-            self.on_click_action(e)
+        if self.is_locked: return
+        if self.on_click_action: self.on_click_action(e)
 
 class TerminalHeader(ft.Container):
-    """Encabezado estilo consola"""
     def __init__(self):
         super().__init__()
         self.content = ft.Column([
-            ft.Text(">>> SISTEMA DE ANÁLISIS HIDROLÓGICO v5.0.1", color=COLOR_ACENTO, size=12, font_family=FUENTE_PRINCIPAL),
-            ft.Text("INITIALIZING CORE MODULES...", color=COLOR_GRIS_MEDIO, size=10, font_family=FUENTE_PRINCIPAL),
-            ft.Divider(color=COLOR_ACENTO, thickness=0.5),
+            ft.Text(">>> SISTEMA DE ANÁLISIS HIDROLÓGICO v6.2.1", color=COLOR_ACENTO, size=13, font_family=FUENTE_PRINCIPAL),
+            ft.Divider(color=COLOR_ACENTO, thickness=0.8),
         ], spacing=2)
         self.margin = ft.margin.only(bottom=20)
 
-# --- VISTAS PRINCIPALES ---
+# --- VISTAS GLOBALES ---
 menu_view = ft.Container()
+about_view = ft.Container(visible=False, expand=True)
 imputacion_view_container = ft.Container(visible=False, expand=True)
 analisis_view_container = ft.Container(visible=False, expand=True)
 gastos_view_container = ft.Container(visible=False, expand=True)
 
 def main(page: ft.Page):
-    # 1. CONFIGURACIÓN DEL TEMA (DARK MODE GLOBAL)
     page.title = "Hydrological Data System"
     page.theme_mode = ft.ThemeMode.DARK
     page.padding = 20
     page.bgcolor = COLOR_FONDO
-    
-    # --- DIMENSIONES DE LA VENTANA (NUEVO) ---
-    page.window_width = 1280
-    page.window_height = 1200
+    page.window_width = 1000
+    page.window_height = 900
     page.window_resizable = False
-    page.window_maximizable = False
-    #page.window_center() # Centra la ventana en el monitor al abrir
     
-    page.update()
-    
-    page.fonts = {
-        "Roboto Mono": "https://github.com/google/fonts/raw/main/apache/robotomono/RobotoMono%5Bwght%5D.ttf"
-    }
-    
-    # Tema Simplificado y Seguro
-    page.theme = ft.Theme(
-        font_family=FUENTE_PRINCIPAL,
-        color_scheme=ft.ColorScheme(
-            primary=COLOR_ACENTO,       # Esto pintará los TextFields y Botones activos de Verde
-            on_primary=COLOR_FONDO,
-            surface=COLOR_SUPERFICIE,
-            background=COLOR_FONDO,
-            on_surface=COLOR_TEXTO,
-        ),
-        # DataTableTheme seguro (sin border)
-        data_table_theme=ft.DataTableTheme(
-            heading_text_style=ft.TextStyle(font_family=FUENTE_PRINCIPAL, color=COLOR_ACENTO, weight="bold"),
-            data_text_style=ft.TextStyle(font_family=FUENTE_PRINCIPAL, color=COLOR_TEXTO),
-        )
-    )
+    page.fonts = {"Roboto Mono": "https://github.com/google/fonts/raw/main/apache/robotomono/RobotoMono%5Bwght%5D.ttf"}
+    page.theme = ft.Theme(font_family=FUENTE_PRINCIPAL, color_scheme=ft.ColorScheme(primary=COLOR_ACENTO, on_primary=COLOR_FONDO, surface=COLOR_SUPERFICIE, background=COLOR_FONDO, on_surface=COLOR_TEXTO))
 
-    # --- NAVEGACIÓN ---
-    def go_to_menu(e):
+    menu_buttons = [] # Referencia para bloqueo
+
+    # --- LOADING UI ---
+    loading_bar = ft.ProgressBar(width=400, color=COLOR_ACENTO, bgcolor="#222222", value=0)
+    loading_text = ft.Text("Procesando...", font_family=FUENTE_PRINCIPAL, color=COLOR_ACENTO)
+    
+    loading_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("SISTEMA OCUPADO", color=COLOR_ACENTO, font_family=FUENTE_PRINCIPAL, size=14),
+        content=ft.Container(
+            content=ft.Column([loading_text, ft.Container(height=10), loading_bar], height=80, alignment=ft.MainAxisAlignment.CENTER),
+            width=450, height=100, padding=10
+        ),
+        bgcolor=COLOR_SUPERFICIE,
+        shape=ft.RoundedRectangleBorder(radius=0)
+    )
+    page.overlay.append(loading_dialog)
+
+    # --- UTILS BLOQUEO ---
+    def lock_ui():
+        for btn in menu_buttons: btn.toggle_lock(True)
+    def unlock_ui():
+        for btn in menu_buttons: btn.toggle_lock(False)
+
+    # --- LÓGICA DE GUARDADO ---
+    def save_project_state(e: ft.FilePickerResultEvent):
+        unlock_ui()
+        if not e.path: return
+        loading_text.value = "Guardando estado..."; loading_bar.value = 0.0; loading_dialog.open = True; page.update()
+
+        path = e.path if e.path.endswith(".hds") else f"{e.path}.hds"
+        manifest = {}
+
+        try:
+            with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                total = len(SESSION_KEYS_TO_PERSIST)
+                for idx, key in enumerate(SESSION_KEYS_TO_PERSIST):
+                    loading_bar.value = (idx + 1) / total; page.update()
+                    if not hasattr(page.session, key): continue
+                    val = getattr(page.session, key)
+                    if val is None: continue
+
+                    if isinstance(val, pd.DataFrame):
+                        filename = f"{key}.pkl"
+                        with zf.open(filename, "w") as f: pickle.dump(val, f)
+                        manifest[key] = {"file": filename, "type": "dataframe"}
+                    else:
+                        filename = f"{key}.json"
+                        try:
+                            json_str = json.dumps(val, cls=NumpyEncoder)
+                            with zf.open(filename, "w") as f: f.write(json_str.encode("utf-8"))
+                            manifest[key] = {"file": filename, "type": "json_obj"}
+                        except:
+                            filename = f"{key}.obj"
+                            with zf.open(filename, "w") as f: pickle.dump(val, f)
+                            manifest[key] = {"file": filename, "type": "pickle_obj"}
+                
+                zf.writestr("manifest.json", json.dumps(manifest, indent=4))
+            
+            loading_dialog.open = False
+            page.snack_bar = ft.SnackBar(ft.Text("Proyecto guardado correctamente."), bgcolor="green", open=True)
+        except Exception as ex:
+            loading_dialog.open = False
+            print(traceback.format_exc())
+            page.snack_bar = ft.SnackBar(ft.Text(f"Error guardando: {ex}"), bgcolor="red", open=True)
+        page.update()
+
+    # --- LÓGICA DE CARGA (LAZY) ---
+    def load_project_state(e: ft.FilePickerResultEvent):
+        unlock_ui()
+        if not e.files: return
+        loading_text.value = "Cargando datos..."; loading_bar.value = 0.0; loading_dialog.open = True; page.update()
+
+        try:
+            path = e.files[0].path
+            with zipfile.ZipFile(path, "r") as zf:
+                manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+                total = len(manifest)
+                
+                for i, (key, meta) in enumerate(manifest.items()):
+                    loading_bar.value = (i / total) * 0.95; page.update()
+                    filename, ftype = meta["file"], meta["type"]
+                    
+                    if ftype == "dataframe" or ftype == "pickle_obj":
+                        with zf.open(filename, "r") as f: setattr(page.session, key, pickle.load(f))
+                    elif ftype == "json_obj":
+                        with zf.open(filename, "r") as f: setattr(page.session, key, json.loads(f.read().decode("utf-8")))
+
+            # Limpiar vistas para obligar a regenerar
+            imputacion_view_container.content = None
+            analisis_view_container.content = None
+            gastos_view_container.content = None
+
+            loading_bar.value = 1.0; page.update(); time.sleep(0.5)
+            loading_dialog.open = False
+            page.snack_bar = ft.SnackBar(ft.Text("Proyecto Cargado."), bgcolor="green", open=True)
+            go_to_menu()
+            
+        except Exception as ex:
+            loading_dialog.open = False
+            print(f"Error carga: {traceback.format_exc()}")
+            page.snack_bar = ft.SnackBar(ft.Text(f"Error carga: {ex}"), bgcolor="red", open=True)
+        page.update()
+
+    # Helpers de Picker seguros
+    def safe_open_picker(picker, mode="load"):
+        lock_ui()
+        if mode=="load": picker.pick_files(allowed_extensions=["hds"])
+        else: picker.save_file(file_name="Proyecto.hds")
+
+    pk_save_proj = ft.FilePicker(on_result=save_project_state)
+    pk_load_proj = ft.FilePicker(on_result=load_project_state)
+    page.overlay.extend([pk_save_proj, pk_load_proj])
+
+    # --- NAVEGACIÓN SEGURA ---
+    def reset_views():
+        menu_view.visible = False
+        about_view.visible = False
+        imputacion_view_container.visible = False
+        analisis_view_container.visible = False
+        gastos_view_container.visible = False
+
+    def safe_nav(target_func):
+        lock_ui()
+        time.sleep(0.05) # Pequeña pausa para que la UI se actualice
+        try:
+            target_func(None)
+        except Exception as e:
+            print(f"Error Nav: {e}")
+        finally:
+            unlock_ui()
+
+    def go_to_menu(e=None):
+        reset_views()
         page.vertical_alignment = ft.MainAxisAlignment.CENTER
         page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
         menu_view.visible = True
-        imputacion_view_container.visible = False
-        analisis_view_container.visible = False
-        gastos_view_container.visible = False
         page.update()
 
     def go_to_imputacion(e):
+        reset_views()
+        if imputacion_view_container.content is None:
+            imputacion_view_container.content = imputacion_app.build_imputacion_view(page, go_to_menu)
         page.vertical_alignment = ft.MainAxisAlignment.START
         page.horizontal_alignment = ft.CrossAxisAlignment.START
-        menu_view.visible = False
         imputacion_view_container.visible = True
-        analisis_view_container.visible = False
-        gastos_view_container.visible = False
         page.update()
 
     def go_to_analisis(e):
+        reset_views()
+        if analisis_view_container.content is None:
+            analisis_view_container.content = analisis_app.build_analisis_view(page, go_to_menu)
         page.vertical_alignment = ft.MainAxisAlignment.START
         page.horizontal_alignment = ft.CrossAxisAlignment.START
-        menu_view.visible = False
-        imputacion_view_container.visible = False
         analisis_view_container.visible = True
-        gastos_view_container.visible = False
         page.update()
         
     def go_to_gastos(e):
+        reset_views()
+        if gastos_view_container.content is None:
+            gastos_view_container.content = gastos_app.build_gastos_view(page, go_to_menu)
         page.vertical_alignment = ft.MainAxisAlignment.START
         page.horizontal_alignment = ft.CrossAxisAlignment.START
-        menu_view.visible = False
-        imputacion_view_container.visible = False
-        analisis_view_container.visible = False
         gastos_view_container.visible = True
         page.update()
+    
+    def go_to_about(e):
+        reset_views()
+        page.vertical_alignment = ft.MainAxisAlignment.CENTER
+        page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
+        about_view.visible = True
+        page.update()
 
-    # --- CONSTRUCCIÓN DEL MENÚ PRINCIPAL ---
+    about_view.content = ft.Container(
+        content=ft.Column([
+            ft.Icon(ft.Icons.INFO_OUTLINE, size=60, color=COLOR_ACENTO),
+            ft.Text("ACERCA DE", size=30, weight="bold", color="white"),
+            ft.Divider(color=COLOR_ACENTO),
+            ft.Text("SISTEMA DE ANÁLISIS HIDROLÓGICO", size=20, color=COLOR_ACENTO),
+            ft.Text("Versión 6.2.1", color=COLOR_GRIS_CLARO),
+            ft.Container(height=20),
+            ft.Text("Desarrollado para:", color=COLOR_GRIS_MEDIO),
+            ft.Text("GEOGRAFICA S.A. DE C.V.", size=25, weight="bold", color="white"),
+            ft.Text("Por: Ing. Juan Jesús Torres Solano", color=COLOR_GRIS_MEDIO),
+            ft.Container(height=30),
+            MatrixButton("VOLVER AL MENÚ", ft.Icons.ARROW_BACK, go_to_menu, width=250)
+        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=40, border=ft.border.all(1, COLOR_ACENTO), bgcolor=COLOR_SUPERFICIE, width=600
+    )
+
+    # --- BOTONES DE MENÚ (Registrados para bloqueo) ---
+    btn_imp = MatrixButton("1. IMPUTACIÓN DE ESTACIONES", ft.Icons.MEMORY, lambda _: safe_nav(go_to_imputacion))
+    btn_ana = MatrixButton("2. ANÁLISIS PRECIPITACIÓN", ft.Icons.SHOW_CHART, lambda _: safe_nav(go_to_analisis))
+    btn_gas = MatrixButton("3. CÁLCULO DE GASTOS", ft.Icons.CALCULATE_OUTLINED, lambda _: safe_nav(go_to_gastos))
+    btn_sav = MatrixButton("GUARDAR", ft.Icons.SAVE, lambda _: safe_open_picker(pk_save_proj, "save"), width=220, color="#2196F3")
+    btn_lod = MatrixButton("CARGAR", ft.Icons.UPLOAD_FILE, lambda _: safe_open_picker(pk_load_proj, "load"), width=220, color="#FFC107")
+    btn_abt = MatrixButton("ACERCA DE", ft.Icons.INFO, lambda _: safe_nav(go_to_about), width=450, color="#9E9E9E")
+    
+    menu_buttons.extend([btn_imp, btn_ana, btn_gas, btn_sav, btn_lod, btn_abt])
+
     menu_view.content = ft.Container(
-        content=ft.Column(
-            [
-                TerminalHeader(),
-                # Imagen (asegúrate que Gota.jpg exista en assets)
-                ft.Image(src="path19.jpg", width=180, fit=ft.ImageFit.CONTAIN), 
-                ft.Text("ANÁLISIS HIDROLÓGICO", size=30, weight=ft.FontWeight.BOLD, color="white"),
-                ft.Text("Seleccione protocolo de operación:", size=14, color=COLOR_GRIS_CLARO),
-                ft.Divider(height=40, color="transparent"),
-                
-                # Botones Estilizados
-                MatrixButton(
-                    "1. PROCESAMIENTO DE DATOS (IMPUTACIÓN)",
-                    ft.Icons.MEMORY,
-                    go_to_imputacion
-                ),
-                ft.Divider(height=10, color="transparent"),
-                MatrixButton(
-                    "2. ANÁLISIS DE PRECIPITACIÓN",
-                    ft.Icons.SHOW_CHART,
-                    go_to_analisis
-                ),
-                ft.Divider(height=10, color="transparent"),
-                MatrixButton(
-                    "3. CÁLCULO DE GASTOS (CUENCAS)",
-                    ft.Icons.CALCULATE_OUTLINED, 
-                    go_to_gastos
-                ),
-                
-                ft.Container(height=50),
-                ft.Text("SYSTEM STATUS: ONLINE", size=10, color=COLOR_ACENTO),
-                ft.Text("SOFTWARE SOLUTION BY GEOGRAFICA S.A. DE C.V.", size=10, color=COLOR_ACENTO),
-            ],
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            alignment=ft.MainAxisAlignment.CENTER
-        ),
-        border=ft.border.all(1, add_opacity(COLOR_ACENTO, 0.2)),
-        padding=40,
-        border_radius=0,
-        bgcolor=COLOR_SUPERFICIE,
-        
-        width=None,    # Dejar que se ajuste o usar un ancho máximo relativo si prefieres
-        expand=False,  # No forzar expansión máxima si queremos que esté centrado
-        alignment=ft.alignment.center # Asegura que el contenido interno esté centrado
+        content=ft.Column([
+            TerminalHeader(),
+            ft.Image(src="path19.jpg", width=30, fit=ft.ImageFit.CONTAIN), 
+            ft.Text("ANÁLISIS HIDROLÓGICO", size=20, weight="bold", color="white"),
+            ft.Divider(height=2, color="transparent"),
+            btn_imp,
+            ft.Divider(height=2, color="transparent"),
+            btn_ana,
+            ft.Divider(height=2, color="transparent"),
+            btn_gas,
+            ft.Divider(height=6, color=add_opacity(COLOR_ACENTO, 0.2)),
+            ft.Row([btn_sav, btn_lod], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
+            ft.Divider(height=2, color="transparent"),
+            btn_abt,
+        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=40, border=ft.border.all(1, add_opacity(COLOR_ACENTO, 0.2)), bgcolor=COLOR_SUPERFICIE, alignment=ft.alignment.center
     )
     
     page.vertical_alignment = ft.MainAxisAlignment.CENTER
     page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
 
-    # --- CARGA DE VISTAS ---
-    imputacion_view_container.content = imputacion_app.build_imputacion_view(page, go_to_menu)
-    analisis_view_container.content = analisis_app.build_analisis_view(page, go_to_menu)
-    gastos_view_container.content = gastos_app.build_gastos_view(page, go_to_menu)
-    
-    # Contenedor principal
-    main_layout = ft.Container(
-        content=ft.Stack([
-            menu_view,
-            imputacion_view_container,
-            analisis_view_container,
-            gastos_view_container
-        ]),
-        expand=True,
-        padding=10
-    )
-
-    page.add(main_layout)
-    page.update()
+    try:
+        imputacion_view_container.content = None 
+        analisis_view_container.content = None
+        gastos_view_container.content = None
+        
+        page.add(ft.Container(content=ft.Stack([menu_view, about_view, imputacion_view_container, analisis_view_container, gastos_view_container]), expand=True, padding=10))
+        go_to_menu()
+    except Exception as e:
+        print(f"❌ ERROR AL CONSTRUIR VISTAS INICIALES: {e}")
+        page.add(ft.Text(f"Error fatal al iniciar: {e}", color="red"))
 
 if __name__ == "__main__":
     ft.app(target=main, assets_dir="assets")

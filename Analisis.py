@@ -119,14 +119,14 @@ def crear_grafico_histogramas(df_filtrado, stats_table):
                          bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', alpha=0.9))
 
             plt.tight_layout()
-            buf = io.BytesIO(); fig.savefig(buf, format='png', dpi=150, bbox_inches='tight'); plt.close(fig)
+            buf = io.BytesIO(); fig.savefig(buf, format='png', dpi=200, bbox_inches='tight'); plt.close(fig)
             return base64.b64encode(buf.getvalue()).decode('utf-8')
     except: return None
 
 def crear_grafico_series_temporales(df_filtrado):
     try:
         with plt.style.context('default'):
-            fig, ax = plt.subplots(figsize=(14, 6))
+            fig, ax = plt.subplots(figsize=(12, 6))
             # Líneas finas y colores sobrios
             df_filtrado['PRECIP_imputado'].plot(ax=ax, label='Imputado', color='#1f77b4', alpha=0.6, linewidth=0.8)
             df_filtrado['PRECIP_original'].plot(ax=ax, label='Original', color='black', alpha=0.8, linewidth=0.8, linestyle='-')
@@ -138,7 +138,7 @@ def crear_grafico_series_temporales(df_filtrado):
             ax.grid(True, linestyle='--', alpha=0.5)
             
             plt.tight_layout()
-            buf = io.BytesIO(); fig.savefig(buf, format='png', dpi=150, bbox_inches='tight'); plt.close(fig)
+            buf = io.BytesIO(); fig.savefig(buf, format='png', dpi=200, bbox_inches='tight'); plt.close(fig)
             return base64.b64encode(buf.getvalue()).decode('utf-8')
     except: return None
 
@@ -160,7 +160,7 @@ def crear_grafico_violin(df_filtrado):
             ax.legend(frameon=True, fancybox=False, edgecolor='black')
             
             plt.tight_layout()
-            buf = io.BytesIO(); fig.savefig(buf, format='png', dpi=150, bbox_inches='tight'); plt.close(fig)
+            buf = io.BytesIO(); fig.savefig(buf, format='png', dpi=200, bbox_inches='tight'); plt.close(fig)
             return base64.b64encode(buf.getvalue()).decode('utf-8')
     except: return None
             

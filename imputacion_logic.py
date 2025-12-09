@@ -251,20 +251,20 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km):
         if not df_neighbors.empty:
             correlations = df_neighbors.corrwith(df_target['PRECIP'])
             
-            # INTENTO 1: Criterio Estricto (r > 0.7)
+            # INTENTO 1: Criterio Estricto (r > 0.7)   --> cambie de 0.7 a 0.6
             for nb in neighbors_all:
                 r_val = correlations.get(nb['col_name'], 0)
                 # Usa el radio dinámico también para las élites
-                if nb['dist'] <= radius_km and r_val >= 0.7:
+                if nb['dist'] <= radius_km and r_val >= 0.6:
                     nb['corr'] = r_val
                     elite_neighbors.append(nb)
             
-            # INTENTO 2: Criterio Relajado (r > 0.5) si no hay élites estrictas
+            # INTENTO 2: Criterio Relajado (r > 0.5) si no hay élites estrictas  --> cambie de 0.5 a 0.4
             if not elite_neighbors:
                 log.append("⚠️ No se encontraron vecinas con r>0.7. Relajando criterio a r>0.5...")
                 for nb in neighbors_all:
                     r_val = correlations.get(nb['col_name'], 0)
-                    if nb['dist'] <= radius_km and r_val >= 0.5:
+                    if nb['dist'] <= radius_km and r_val >= 0.4:
                         nb['corr'] = r_val
                         elite_neighbors.append(nb)
 
@@ -339,7 +339,7 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km):
                 
                 y_train_temp = df_target['PRECIP'].interpolate(method='linear', limit_direction='both').fillna(0)
                 
-                if len(missing_indices) < 3650: 
+                if len(missing_indices) < 50500: # ---> 3650   se amplia a 50500 para incementar el tango de indices que completa
                     model = pm.auto_arima(
                         y_train_temp,
                         X=exog_data,

@@ -7,62 +7,69 @@ import webbrowser
 input_file_picker = ft.FilePicker()
 output_file_picker = ft.FilePicker()
 
-# View 1: Fuente
-selected_input_folder = ft.Text("Ninguna carpeta seleccionada", color="grey")
-station_count_text = ft.Text("", visible=False, color="#00ff41") 
-open_map_button = ft.ElevatedButton("Abrir Mapa de Estaciones", icon=ft.Icons.MAP, visible=False)
-
-# View 2: Objetivo
-dd_estaciones = ft.Dropdown(
-    label="Seleccione Estación Objetivo",
-    hint_text="Elija la estación a imputar...",
-    width=400,
-    options=[],
-    disabled=True,
-    focused_border_color="#00ff41"
-)
-
-# NUEVO: Selector de Radio de Búsqueda
-dd_radio = ft.Dropdown(
-    label="Radio de Búsqueda (km)",
-    hint_text="Distancia para buscar vecinos...",
-    width=200,
-    value="50", # Valor por defecto
-    options=[
-        ft.dropdown.Option("50"),
-        ft.dropdown.Option("100"),
-        ft.dropdown.Option("150"),
-        ft.dropdown.Option("200"),
-        ft.dropdown.Option("250"),
-        ft.dropdown.Option("300"),
-    ],
-    focused_border_color="#00ff41"
-)
-
-# View 3: Ejecución
-selected_output_folder = ft.Text("Salida: Carpeta 'Imputado' (Automático)")
-impute_button = ft.ElevatedButton(
-    "INICIAR IMPUTACIÓN",
-    disabled=True,
-    icon=ft.Icons.AUTO_FIX_HIGH,
-    style=ft.ButtonStyle(color="#00ff41")
-)
-pb = ft.ProgressBar(value=0, visible=False, color="#00ff41", bgcolor="#111111")
-pbl = ft.Text("", visible=False)
-log_result = ft.Text("", visible=False, font_family="Roboto Mono", size=12)
-view_results_button = ft.ElevatedButton("Abrir carpeta de resultados", visible=False, icon=ft.Icons.FOLDER_OPEN)
-
-
 def build_imputacion_view(page: ft.Page, on_back_to_menu):
     
-    # Estado de Sesión
+    # --- 1. INICIALIZACIÓN DE SESIÓN ---
     if not hasattr(page.session, "imput_folder_path"): page.session.imput_folder_path = None
     if not hasattr(page.session, "imput_output_folder"): page.session.imput_output_folder = None
     if not hasattr(page.session, "imput_station_files"): page.session.imput_station_files = {}
     if not hasattr(page.session, "imput_map_path"): page.session.imput_map_path = None
+    if not hasattr(page.session, "df_imputado_resultado"): page.session.df_imputado_resultado = None
 
-    # --- Callbacks ---
-    
+    # --- 2. ELEMENTOS VISUALES (ESTILO ORIGINAL) ---
+    selected_input_folder = ft.Text("Ninguna carpeta seleccionada", color="grey")
+    station_count_text = ft.Text("", visible=False, color="#00ff41") 
+    open_map_button = ft.ElevatedButton("Abrir Mapa de Estaciones", icon=ft.Icons.MAP, visible=False)
+
+    dd_estaciones = ft.Dropdown(
+        label="Seleccione Estación Objetivo",
+        hint_text="Elija la estación a imputar...",
+        width=400,
+        options=[],
+        disabled=True,
+        focused_border_color="#00ff41"
+    )
+
+    dd_radio = ft.Dropdown(
+        label="Radio de Búsqueda (km)",
+        hint_text="Distancia para buscar vecinos...",
+        width=200,
+        value="150",
+        options=[
+            ft.dropdown.Option("50"),
+            ft.dropdown.Option("100"),
+            ft.dropdown.Option("150"),
+            ft.dropdown.Option("200"),
+            ft.dropdown.Option("250"),
+            ft.dropdown.Option("300"),
+        ],
+        focused_border_color="#00ff41"
+    )
+
+    selected_output_folder = ft.Text("Salida: Carpeta 'Imputado' (Automático)")
+    impute_button = ft.ElevatedButton(
+        "INICIAR IMPUTACIÓN",
+        disabled=True,
+        icon=ft.Icons.AUTO_FIX_HIGH,
+        style=ft.ButtonStyle(color="#00ff41")
+    )
+    pb = ft.ProgressBar(value=0, visible=False, color="#00ff41", bgcolor="#111111")
+    pbl = ft.Text("", visible=False)
+    log_result = ft.Text("", visible=False, font_family="Roboto Mono", size=12)
+    view_results_button = ft.ElevatedButton("Abrir carpeta de resultados", visible=False, icon=ft.Icons.FOLDER_OPEN)
+
+    # --- 3. LÓGICA INTERNA ---
+
+    def regenerate_map_if_needed():
+        """Regenera el mapa HTML si tenemos estaciones cargadas pero no el archivo físico."""
+        if page.session.imput_station_files and not page.session.imput_map_path:
+             map_path = imputacion_logic.generar_mapa_html(page.session.imput_station_files, ".")
+             page.session.imput_map_path = map_path
+        
+        if page.session.imput_map_path:
+            open_map_button.visible = True
+            open_map_button.on_click = lambda _: webbrowser.open(f"file:///{page.session.imput_map_path}")
+
     def on_input_folder_selected(e):
         if e.path: 
             page.session.imput_folder_path = e.path
@@ -71,62 +78,59 @@ def build_imputacion_view(page: ft.Page, on_back_to_menu):
             
             pbl.value = "Escaneando estaciones..."; pbl.visible = True; page.update()
             
-            # Lógica de lectura (Sin cambios)
             station_files = imputacion_logic.leer_estaciones(e.path)
             page.session.imput_station_files = station_files
             
-            dd_estaciones.options = []
-            if station_files:
-                keys = sorted(list(station_files.keys()))
-                for k in keys: dd_estaciones.options.append(ft.dropdown.Option(k))
-                dd_estaciones.disabled = False
-                station_count_text.value = f"{len(keys)} estaciones encontradas."
-                station_count_text.visible = True
-                
-                # Generación de Mapa
-                map_path = imputacion_logic.generar_mapa_html(station_files, ".")
-                page.session.imput_map_path = map_path
-                open_map_button.visible = bool(map_path)
-                open_map_button.on_click = lambda _: webbrowser.open(f"file:///{map_path}")
-            else:
-                station_count_text.value = "No se encontraron archivos .txt válidos."
+            restore_station_ui(station_files)
             
             pbl.visible = False
             page.update()
+
+    def restore_station_ui(station_files):
+        """Actualiza el dropdown y textos basado en los archivos cargados."""
+        dd_estaciones.options = []
+        if station_files:
+            keys = sorted(list(station_files.keys()))
+            for k in keys: dd_estaciones.options.append(ft.dropdown.Option(k))
+            dd_estaciones.disabled = False
+            station_count_text.value = f"{len(keys)} estaciones encontradas."
+            station_count_text.visible = True
+            regenerate_map_if_needed()
+        else:
+            station_count_text.value = "No se encontraron archivos .txt válidos."
 
     def on_click_impute(e):
         target_id = dd_estaciones.value
         if not target_id: return
         
-        # Obtener radio seleccionado
-        try:
-            radius_km = int(dd_radio.value)
-        except:
-            radius_km = 150 # Fallback seguro
+        try: radius_km = int(dd_radio.value)
+        except: radius_km = 150 
         
-        # Bloqueo de UI durante proceso
         impute_button.disabled = True; pb.visible = True; pbl.visible = True
         log_result.visible = False; view_results_button.visible = False
         page.update()
         
         try:
-            # Asegurar carpeta
+            if not page.session.imput_output_folder: # Fallback seguro
+                 page.session.imput_output_folder = os.path.join(page.session.imput_folder_path, 'Imputado')
+
             if not os.path.exists(page.session.imput_output_folder):
                 os.makedirs(page.session.imput_output_folder)
 
-            # Ejecución Lógica (pasando el radio)
             df_res, log_msg = imputacion_logic.impute_target_station(
                 target_id, 
                 page.session.imput_station_files, 
                 page, pb, pbl,
-                radius_km # <--- NUEVO PARÁMETRO
+                radius_km 
             )
             
             if df_res is not None:
-                # Guardado Automático Seguro
-                out_path = imputacion_logic.save_target_csv(df_res, target_id, page.session.imput_output_folder)
+                # Guardamos resultado en sesión para persistencia
+                page.session.df_imputado_resultado = df_res
                 
-                log_result.value = f"✅ ÉXITO (Radio {radius_km}km):\n{log_msg}\nGuardado en: {out_path}"
+                out_path = imputacion_logic.save_target_csv(df_res, target_id, page.session.imput_output_folder)
+                msg_display = log_msg if len(log_msg) < 2000 else log_msg[:2000] + "\n... [Log truncado]"
+                log_result.value = f"✅ ÉXITO (Radio {radius_km}km):\n{msg_display}\nGuardado en: {out_path}"
                 log_result.color = "green"
                 view_results_button.visible = True
                 page.snack_bar = ft.SnackBar(ft.Text("Proceso finalizado y guardado correctamente."), bgcolor="green", open=True)
@@ -136,16 +140,14 @@ def build_imputacion_view(page: ft.Page, on_back_to_menu):
                 page.snack_bar = ft.SnackBar(ft.Text("Error durante el cálculo."), bgcolor="red", open=True)
         
         except Exception as ex:
-             # Captura de errores de escritura/permisos
              log_result.value = f"❌ ERROR CRÍTICO:\n{ex}"
              log_result.color = "red"
              page.snack_bar = ft.SnackBar(ft.Text(f"Error crítico: {ex}"), bgcolor="red", open=True)
 
-        # Restaurar UI
         pb.visible = False; log_result.visible = True; impute_button.disabled = False
         page.update()
 
-    # Asignaciones directas
+    # --- CALLBACKS ---
     input_file_picker.on_result = on_input_folder_selected
     output_file_picker.on_result = lambda e: setattr(page.session, 'imput_output_folder', e.path) or setattr(selected_output_folder, 'value', f"Salida: {e.path}") or page.update()
     dd_estaciones.on_change = lambda e: setattr(impute_button, 'disabled', False) or setattr(impute_button, 'text', f"IMPUTAR: {dd_estaciones.value}") or page.update()
@@ -154,7 +156,7 @@ def build_imputacion_view(page: ft.Page, on_back_to_menu):
 
     page.overlay.extend([input_file_picker, output_file_picker])
 
-    # --- Estructura Visual (Navigation Rail) ---
+    # --- 4. VISTAS (LAYOUT ORIGINAL) ---
     
     view_fuente = ft.Container(
         content=ft.Column([
@@ -179,7 +181,7 @@ def build_imputacion_view(page: ft.Page, on_back_to_menu):
             ft.Divider(),
             ft.Text("Configuración Geográfica:", weight="bold"),
             ft.Text("Seleccione el radio de búsqueda para zonas de llanura o dispersas."),
-            dd_radio # NUEVO CONTROL
+            dd_radio 
         ]), padding=20, visible=False
     )
 
@@ -203,15 +205,13 @@ def build_imputacion_view(page: ft.Page, on_back_to_menu):
 
     def change_view(e):
         idx = e.control.selected_index
-        for i, v in enumerate(views):
-            v.visible = (i == idx)
+        for i, v in enumerate(views): v.visible = (i == idx)
         page.update()
 
     rail = ft.NavigationRail(
         selected_index=0,
         label_type=ft.NavigationRailLabelType.ALL,
-        min_width=100,
-        min_extended_width=400,
+        min_width=100, min_extended_width=400,
         leading=ft.Column([
             ft.IconButton(ft.Icons.ARROW_BACK, on_click=on_back_to_menu, tooltip="Volver al Menú"),
             ft.Text("Imputación", weight="bold")
@@ -225,11 +225,19 @@ def build_imputacion_view(page: ft.Page, on_back_to_menu):
         on_change=change_view
     )
 
-    return ft.Row(
-        [
-            rail,
-            ft.VerticalDivider(width=1),
-            ft.Column(views, expand=True, scroll=ft.ScrollMode.ADAPTIVE)
-        ],
-        expand=True
-    )
+    # --- 5. RESTAURACIÓN DE ESTADO (AUTO-CARGA) ---
+    # Si existen datos en sesión, restauramos la UI al estado previo
+    if page.session.imput_folder_path:
+        selected_input_folder.value = f"Fuente: {page.session.imput_folder_path}"
+        if page.session.imput_station_files:
+            restore_station_ui(page.session.imput_station_files)
+    
+    if page.session.df_imputado_resultado is not None:
+        log_result.value = "✅ Datos recuperados de la sesión anterior. Puede revisar los resultados o iniciar un nuevo cálculo."
+        log_result.color = "green"
+        log_result.visible = True
+        # Saltamos a la vista de resultados si ya hay datos
+        rail.selected_index = 2
+        change_view(type('obj', (object,), {'control': type('obj', (object,), {'selected_index': 2})}))
+
+    return ft.Row([rail, ft.VerticalDivider(width=1), ft.Column(views, expand=True, scroll=ft.ScrollMode.ADAPTIVE)], expand=True)

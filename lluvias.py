@@ -27,7 +27,7 @@ PARAM_NAMES = {
 def _figure_to_base64(fig):
     buf = io.BytesIO()
     # Estilo académico: Fondo blanco explícito
-    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='white')
+    fig.savefig(buf, format='png', dpi=200, bbox_inches='tight', facecolor='white')
     plt.close(fig)
     return base64.b64encode(buf.getvalue()).decode('utf-8')
 
@@ -112,7 +112,7 @@ def analizar_eventos_lluvia(df_filtrado):
         
         # --- 2. Gráfico Series ---
         with plt.style.context('default'):
-            fig_series, ax_series = plt.subplots(figsize=(10, 5)) 
+            fig_series, ax_series = plt.subplots(figsize=(12, 6)) 
             ax_series.plot(max_annual.index, max_annual.values, marker='o', color='#4682B4', linestyle='-', linewidth=1, markersize=4, markeredgecolor='black')
             ax_series.set_title('Serie de Valores Máximos Anuales', fontweight='bold')
             ax_series.set_xlabel('Año')
@@ -133,7 +133,7 @@ def analizar_eventos_lluvia(df_filtrado):
         results["df_acf"] = df_acf
         
         with plt.style.context('default'):
-            fig_acf, ax_acf = plt.subplots(figsize=(8, 5)) 
+            fig_acf, ax_acf = plt.subplots(figsize=(12, 6)) 
             plot_acf(max_annual, lags=10, ax=ax_acf, fft=False, color='black', vlines_kwargs={'colors': 'black'}, alpha=0.05)
             ax_acf.set_title('Correlograma (ACF)', fontweight='bold')
             ax_acf.grid(True, linestyle='--', alpha=0.5)
@@ -150,7 +150,7 @@ def analizar_eventos_lluvia(df_filtrado):
         })
         
         with plt.style.context('default'):
-            fig_wei, ax_wei = plt.subplots(figsize=(8, 5)) 
+            fig_wei, ax_wei = plt.subplots(figsize=(12, 6)) 
             ax_wei.plot(t_r_weibull, sorted_max, 'o', color='#4682B4', markeredgecolor='black')
             ax_wei.set_xscale('log')
             ax_wei.set_xticks([1, 2, 5, 10, 20, 50, 100])
@@ -237,7 +237,7 @@ def analizar_eventos_lluvia(df_filtrado):
 
         # --- Gráfico Comparativo (Estilo Académico + Todas las curvas) ---
         with plt.style.context('default'):
-            fig_dist, ax_dist = plt.subplots(figsize=(10, 6))
+            fig_dist, ax_dist = plt.subplots(figsize=(12, 6))
             
             # Histograma Base
             counts, bins, _ = ax_dist.hist(max_annual, bins='auto', density=True, alpha=0.3, color='lightgray', edgecolor='black', label='Datos Observados')

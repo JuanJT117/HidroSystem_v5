@@ -1,0 +1,8 @@
+,Prueba,Estadístico,P-Valor,Resultado
+0,Anderson-Darling (Indep),1.3736,Crit(5%)=0.75,No Normal
+1,Temporal (CvM),0.2181,0.2378,Homogénea
+2,Temporal (T-Student),-0.6146,0.5405,Medias Iguales
+3,Temporal (Levene),1.3648,0.2461,Varianzas Iguales
+4,Estratificada (CvM),0.0282,0.9887,Homogénea
+5,Estratificada (T-Student),0.0362,0.9712,Medias Iguales
+6,Estratificada (Levene),0.0178,0.8943,Varianzas Iguales

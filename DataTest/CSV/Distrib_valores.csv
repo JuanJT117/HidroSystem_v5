@@ -1,0 +1,9 @@
+,Distribución,Ajuste,KS Stat,P-Valor,MSE,Error Std (SE),Chi2 Stat
+0,Log Pearson,Aceptado,0.094,0.4155,0.00078,0.02786,16.1294
+1,Log Normal,Aceptado,0.0966,0.3812,0.00089,0.02979,15.9708
+2,Pearson III,Aceptado,0.0969,0.3772,0.00083,0.02885,16.2128
+3,Gamma,Aceptado,0.0969,0.3772,0.00083,0.02885,16.2128
+4,Gumbel,Aceptado,0.0981,0.363,0.00097,0.0311,16.0793
+5,Gumbel 2 Pob,Aceptado,0.1104,0.2332,0.00139,0.03726,17.4298
+6,Normal,Aceptado,0.1296,0.1053,0.0024,0.04901,27.7894
+7,Exponencial,Rechazado,0.2666,0.0,0.01769,0.133,51.3601

@@ -1,0 +1,11 @@
+,Lag,Autocorrelación,Límite Inf,Límite Sup,Interpretación
+0,1,0.0435,-0.2126,0.2126,No Signif.
+1,2,0.1242,-0.213,0.213,No Signif.
+2,3,0.0797,-0.2162,0.2162,No Signif.
+3,4,0.2183,-0.2176,0.2176,Significativa
+4,5,0.1768,-0.2273,0.2273,No Signif.
+5,6,-0.0043,-0.2334,0.2334,No Signif.
+6,7,0.0132,-0.2334,0.2334,No Signif.
+7,8,0.068,-0.2334,0.2334,No Signif.
+8,9,0.1426,-0.2343,0.2343,No Signif.
+9,10,-0.1123,-0.2382,0.2382,No Signif.
