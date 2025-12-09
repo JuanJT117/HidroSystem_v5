@@ -395,7 +395,9 @@ python main.py
 Para ejecutar el comando o script desde el Anaconda Prompt (Anaconda CMD) o Anaconda Shell, y asegurarte de que se ejecuta desde la carpeta raíz de tu entorno de proyecto, navega usando cd
 
 ```Bash
-  flet pack main.py --name "HidroSystem_v5" --icon "assets/icon.ico" --add-data "assets;assets" --hidden-import="sklearn" --hidden-import="statsmodels" --hidden-import="scipy" --hidden-import="pmdarima" --hidden-import="matplotlib" --hidden-import="folium" --hidden-import="geopy" --hidden-import="openpyxl"
+  #version 6.2.2
+
+flet pack main.py --name "HidroSystem_v6.2.2" --icon "assets/icon.ico" --add-data "assets;assets" --hidden-import="sklearn.linear_model" --hidden-import="statsmodels.tsa" --hidden-import="scipy.stats" --hidden-import="pmdarima" --hidden-import="matplotlib" --hidden-import="folium" --hidden-import="geopy" --hidden-import="openpyxl" --hidden-import="pandas"
 ```
 
 📂 Estructura del Proyecto
