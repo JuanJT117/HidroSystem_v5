@@ -1,0 +1,30 @@
+Ejecutar el Comando de Empaquetado:   flet pack main.py --name "SistemaHidrologico" --icon "assets/icon.ico" --hidden-import="sklearn" --hidden-import="statsmodels" --hidden-import="scipy" --hidden-import="pmdarima"
+
+Version 5.0.1
+flet pack main.py --name "HidroSystem_v5" --icon "assets/icon.ico" --add-data "assets;assets" --hidden-import="sklearn" --hidden-import="statsmodels" --hidden-import="scipy" --hidden-import="pmdarima" --hidden-import="matplotlib" --hidden-import="folium" --hidden-import="geopy" --hidden-import="openpyxl"
+
+version 6.2.2
+flet pack main.py --name "HDS_v6.2.2" --icon "assets/icon.ico" --add-data "assets;assets" --hidden-import="sklearn.linear_model" --hidden-import="statsmodels.tsa" --hidden-import="scipy.stats" --hidden-import="pmdarima" --hidden-import="matplotlib" --hidden-import="folium" --hidden-import="geopy" --hidden-import="openpyxl" --hidden-import="pandas"
+
+version 6.2.3
+flet pack main.py --name "HDS_v6.2.3" --icon "assets/icon.ico" --add-data "assets;assets" --hidden-import="sklearn.linear_model" --hidden-import="statsmodels.tsa" --hidden-import="scipy.stats" --hidden-import="pmdarima" --hidden-import="matplotlib" --hidden-import="folium" --hidden-import="geopy" --hidden-import="openpyxl" --hidden-import="pandas"
+
+version 8.0.1
+flet pack main.py --name "HDS_v8.0.1" --icon "assets/icon.ico" --add-data "assets;assets" --hidden-import="pandas" --hidden-import="numpy" --hidden-import="openpyxl" --hidden-import="matplotlib" --hidden-import="seaborn" --hidden-import="scipy.stats" --hidden-import="scipy.interpolate" --hidden-import="scipy.special" --hidden-import="scipy.linalg" --hidden-import="sklearn" --hidden-import="sklearn.linear_model" --hidden-import="sklearn.neighbors" --hidden-import="statsmodels" --hidden-import="statsmodels.tsa" --hidden-import="statsmodels.tsa.statespace" --hidden-import="pmdarima" --hidden-import="folium" --hidden-import="geopy" --hidden-import="shapefile"
+
+cp -r /mnt/c/Users/USER/Documents/proyectos/conda/CONAGUA-Completando_Datos/Version7/* ~/proyectos_linux/HidroSystem/
+
+
+flet pack main.py \
+    --name "HidroSystem_v6.2.1" \
+    --icon "assets/path19.png" \
+    --add-data "assets:assets" \
+    --hidden-import="sklearn.linear_model" \
+    --hidden-import="statsmodels.tsa" \
+    --hidden-import="scipy.stats" \
+    --hidden-import="pmdarima" \
+    --hidden-import="matplotlib" \
+    --hidden-import="folium" \
+    --hidden-import="geopy" \
+    --hidden-import="openpyxl" \
+    --hidden-import="pandas"
