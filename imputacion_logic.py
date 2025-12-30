@@ -7,6 +7,7 @@ import pmdarima as pm
 import folium 
 import traceback
 import warnings
+import shapefile # <--- REQUISITO: pip install pyshp
 
 # Ignorar advertencias de modelos para limpieza de consola
 warnings.filterwarnings("ignore")
@@ -27,21 +28,30 @@ def leer_estaciones(folder_path):
     for nombre_archivo in archivos:
         try:
             path = os.path.join(folder_path, nombre_archivo)
-            lat, lon = None, None
-            # Leemos solo el encabezado para velocidad
+            lat, lon, alt = None, None, None 
+            
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                 for _ in range(20):
                     linea = f.readline()
                     if not linea: break
+                    
                     if 'LATITUD' in linea:
                         lat = float(linea.split(':')[1].strip().split(' ')[0])
                     elif 'LONGITUD' in linea:
                         lon = float(linea.split(':')[1].strip().split(' ')[0])
-                    if lat is not None and lon is not None: break
+                    elif 'ALTITUD' in linea: 
+                        try:
+                            alt = float(linea.split(':')[1].strip().split(' ')[0])
+                        except:
+                            alt = 0.0
+
+                    if lat is not None and lon is not None and alt is not None: break
             
+            if alt is None: alt = 0.0
+
             if lat is not None and lon is not None:
                 station_id = nombre_archivo.split('.')[0]
-                local_station_files[station_id] = {'file': nombre_archivo, 'lat': lat, 'lon': lon, 'path': path}
+                local_station_files[station_id] = {'file': nombre_archivo, 'lat': lat, 'lon': lon, 'alt': alt, 'path': path}
         except Exception as e:
             print(f"Error leyendo cabecera de {nombre_archivo}: {e}")
     return local_station_files
@@ -63,7 +73,56 @@ def generar_mapa_html(station_files, output_dir="."):
         return None
 
 #-------------------------------------------------------------------------------------------------------------------------------------------------------
-# 2. PARSEO Y RANGO GLOBAL
+# 2. UTILERÍAS GIS (SHAPEFILE)
+#-------------------------------------------------------------------------------------------------------------------------------------------------------
+
+def exportar_shapefile(data_list, output_path):
+    """
+    Genera un Shapefile de puntos (SHP, SHX, DBF, PRJ).
+    data_list: Lista de diccionarios con claves standarizadas.
+    """
+    try:
+        # Aseguramos que la extensión sea correcta para el 'base name'
+        base_path = os.path.splitext(output_path)[0]
+        
+        # 1. Crear el escritor de Shapefile (Tipo PUNTO)
+        w = shapefile.Writer(base_path, shapefile.POINT)
+        
+        # 2. Definir campos de la tabla de atributos (DBF)
+        w.field('ID_EST', 'C', size=50)      # Caracter
+        w.field('ALTITUD', 'N', decimal=2)   # Numérico
+        w.field('DIST_KM', 'N', decimal=2)   # Numérico (Distancia al objetivo)
+        w.field('ROL', 'C', size=20)         # Objetivo o Vecina
+        
+        # 3. Poblar geometría y atributos
+        for row in data_list:
+            # Geometría: Longitud (X), Latitud (Y)
+            w.point(row['LONGITUD'], row['LATITUD'])
+            
+            # Atributos (Deben coincidir con los campos definidos arriba)
+            # Manejo seguro de campos opcionales
+            dist = row.get('DISTANCIA_KM', 0.0)
+            rol = row.get('ROL', 'ESTACION')
+            
+            w.record(row['ID'], row['ALTITUD'], dist, rol)
+            
+        w.close()
+        
+        # 4. Crear archivo de proyección (.prj) WGS84
+        # Esto permite que QGIS reconozca las coordenadas lat/lon automáticamente
+        wgs84_wkt = 'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.017453292519943295]]'
+        with open(f"{base_path}.prj", "w") as f:
+            f.write(wgs84_wkt)
+            
+        return f"{base_path}.shp"
+        
+    except Exception as e:
+        print(f"Error generando SHP: {e}")
+        traceback.print_exc()
+        raise e
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------
+# 3. PARSEO Y RANGO GLOBAL
 #-------------------------------------------------------------------------------------------------------------------------------------------------------
 
 def parse_station_data(file_path):
@@ -93,7 +152,6 @@ def parse_station_data(file_path):
         return pd.DataFrame(columns=['FECHA', 'PRECIP'])
 
 def obtener_rango_global_fechas(station_files):
-    """Escanea rápidamente todas las estaciones para encontrar Min y Max absolutos."""
     fechas_min = []
     fechas_max = []
     
@@ -107,14 +165,13 @@ def obtener_rango_global_fechas(station_files):
     return pd.date_range(min(fechas_min), max(fechas_max), freq='D')
 
 #-------------------------------------------------------------------------------------------------------------------------------------------------------
-# 3. UTILERÍAS DE CÁLCULO
+# 4. UTILERÍAS DE CÁLCULO
 #-------------------------------------------------------------------------------------------------------------------------------------------------------
 
 def calculate_distance(lat1, lon1, lat2, lon2):
     return great_circle((lat1, lon1), (lat2, lon2)).km
 
 def _filtrar_ruido_intermedio(df_target, df_neighbors, original_mask):
-    """Filtra valores imputados que exceden por mucho el máximo de los vecinos."""
     try:
         temp_df = df_neighbors.copy()
         temp_df['Año'] = temp_df.index.year
@@ -142,20 +199,18 @@ def _filtrar_ruido_intermedio(df_target, df_neighbors, original_mask):
         return df_target, 0
 
 #-------------------------------------------------------------------------------------------------------------------------------------------------------
-# 4. NÚCLEO DE IMPUTACIÓN (SINGLE TARGET INTELIGENTE + ROBUSTO)
+# 5. NÚCLEO DE IMPUTACIÓN
 #-------------------------------------------------------------------------------------------------------------------------------------------------------
 
 def impute_target_station(target_id, station_files, page, pb, pbl, radius_km):
     log = []
     try:
-        # --- 1. DEFINIR RANGO GLOBAL ---
         pbl.value = "Calculando rango de fechas global..."; page.update()
         global_range = obtener_rango_global_fechas(station_files)
         if global_range is None: return None, "Error: No se pudieron determinar fechas."
         log.append(f"Rango Global: {global_range.min().date()} a {global_range.max().date()}")
         log.append(f"Radio de Búsqueda seleccionado: {radius_km} km")
 
-        # --- 2. CARGAR TARGET ---
         info_target = station_files[target_id]
         pbl.value = f"Cargando objetivo: {target_id}..."; page.update()
         
@@ -169,7 +224,6 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km):
         initial_nans = df_target['PRECIP'].isna().sum()
         log.append(f"Huecos totales a rellenar: {initial_nans}")
 
-        # --- 3. CARGAR VECINOS (Radio Dinámico) ---
         pbl.value = f"Cargando vecinos (Radio {radius_km}km)..."; page.update()
         
         lat_t, lon_t = info_target['lat'], info_target['lon']
@@ -179,7 +233,7 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km):
             if sid == target_id: continue
             dist = calculate_distance(lat_t, lon_t, info['lat'], info['lon'])
             
-            if dist <= radius_km: # Uso del parámetro dinámico
+            if dist <= radius_km:
                 df_nb = parse_station_data(info['path'])
                 df_nb = df_nb.reindex(global_range)
                 
@@ -202,9 +256,7 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km):
 
         pb.value = 0.2; page.update()
 
-        # ==============================================================================
-        # FASE 1: IDW (Espacial) - CON CANDADO >= 5 VECINOS
-        # ==============================================================================
+        # FASE 1: IDW
         missing_indices = df_target[df_target['PRECIP'].isna()].index
         
         if not df_neighbors.empty and len(missing_indices) > 0:
@@ -232,17 +284,14 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km):
                     df_target.at[date, 'PRECIP'] = round(num / den, 2)
                     count_idw += 1
             
-            log.append(f"Rellenados IDW: {count_idw} (Omitidos por falta de vecinos: {skipped_idw})")
+            log.append(f"Rellenados IDW: {count_idw} (Omitidos: {skipped_idw})")
             
             df_target, rm = _filtrar_ruido_intermedio(df_target, df_neighbors, original_data_mask)
             if rm > 0: log.append(f"-> Filtro IDW: Se eliminaron {rm} datos ruidosos.")
 
         pb.value = 0.4; page.update()
 
-        # ==============================================================================
-        # SELECCIÓN DE "ÉLITES" (Filtro Híbrido Dinámico)
-        # Criterio: Distancia <= Radio  Y  Correlación > 0.7
-        # ==============================================================================
+        # SELECCIÓN DE "ÉLITES"
         pbl.value = "Seleccionando estaciones Élite..."
         page.update()
         
@@ -250,18 +299,14 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km):
         
         if not df_neighbors.empty:
             correlations = df_neighbors.corrwith(df_target['PRECIP'])
-            
-            # INTENTO 1: Criterio Estricto (r > 0.7)   --> cambie de 0.7 a 0.6
             for nb in neighbors_all:
                 r_val = correlations.get(nb['col_name'], 0)
-                # Usa el radio dinámico también para las élites
                 if nb['dist'] <= radius_km and r_val >= 0.6:
                     nb['corr'] = r_val
                     elite_neighbors.append(nb)
             
-            # INTENTO 2: Criterio Relajado (r > 0.5) si no hay élites estrictas  --> cambie de 0.5 a 0.4
             if not elite_neighbors:
-                log.append("⚠️ No se encontraron vecinas con r>0.7. Relajando criterio a r>0.5...")
+                log.append("⚠️ Relajando criterio a r>0.4...")
                 for nb in neighbors_all:
                     r_val = correlations.get(nb['col_name'], 0)
                     if nb['dist'] <= radius_km and r_val >= 0.4:
@@ -273,13 +318,11 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km):
         elite_cols = [n['col_name'] for n in elite_neighbors]
         log.append(f"Estaciones Élite finales: {len(elite_neighbors)}")
 
-        # ==============================================================================
-        # FASE 2: MLR (Regresión) - UMBRALES AJUSTADOS
-        # ==============================================================================
+        # FASE 2: MLR
         missing_indices = df_target[df_target['PRECIP'].isna()].index
         
         if len(missing_indices) > 0 and len(elite_neighbors) > 0:
-            pbl.value = "Fase 2: MLR (Req. >= 5 élites, Max 7)..."
+            pbl.value = "Fase 2: MLR..."
             page.update()
             
             df_train = df_neighbors[elite_cols].copy()
@@ -292,17 +335,12 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km):
                 
                 try:
                     model = LinearRegression().fit(X, y)
-                    
                     count_mlr = 0
-                    skipped_mlr_data = 0
                     
                     for date in missing_indices:
                         if count_mlr >= 7: break
-                        
                         row_elite = df_neighbors.loc[date, elite_cols]
-                        if row_elite.count() < 5:
-                            skipped_mlr_data += 1
-                            continue
+                        if row_elite.count() < 5: continue
                         
                         X_input = row_elite.fillna(0).to_frame().T 
                         pred = max(model.predict(X_input)[0], 0)
@@ -311,21 +349,17 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km):
                         count_mlr += 1
                         
                     log.append(f"Rellenados MLR: {count_mlr}")
-                    if skipped_mlr_data > 0: log.append(f"-> MLR omitidos por falta datos élite: {skipped_mlr_data}")
-                    
                     df_target, rm = _filtrar_ruido_intermedio(df_target, df_neighbors, original_data_mask)
                     if rm > 0: log.append(f"-> Filtro MLR: {rm} eliminados.")
                     
                 except Exception as ex:
                     log.append(f"Fallo en MLR: {ex}")
             else:
-                log.append(f"MLR omitido: Solo {len(df_train)} días coinciden con élites (Req. >= 14).")
+                log.append(f"MLR omitido: Insuficientes datos ({len(df_train)}).")
 
         pb.value = 0.7; page.update()
 
-        # ==============================================================================
-        # FASE 3: SARIMAX (ARIMA) - LÍMITE AMPLIADO
-        # ==============================================================================
+        # FASE 3: SARIMAX
         missing_indices = df_target[df_target['PRECIP'].isna()].index
         
         if len(missing_indices) > 0:
@@ -339,19 +373,14 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km):
                 
                 y_train_temp = df_target['PRECIP'].interpolate(method='linear', limit_direction='both').fillna(0)
                 
-                if len(missing_indices) < 50500: # ---> 3650   se amplia a 50500 para incementar el tango de indices que completa
+                if len(missing_indices) < 50500:
                     model = pm.auto_arima(
-                        y_train_temp,
-                        X=exog_data,
+                        y_train_temp, X=exog_data,
                         start_p=1, start_q=1, max_p=2, max_q=2,
-                        seasonal=False, 
-                        stepwise=True,
-                        error_action='ignore',
-                        suppress_warnings=True
+                        seasonal=False, stepwise=True,
+                        error_action='ignore', suppress_warnings=True
                     )
-                    
                     fitted_vals = model.predict_in_sample(X=exog_data)
-                    
                     if not isinstance(fitted_vals, pd.Series):
                         fitted_vals = pd.Series(fitted_vals, index=global_range)
                         
@@ -361,23 +390,22 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km):
                     
                     log.append(f"Rellenados SARIMAX: {len(missing_indices)}")
                 else:
-                    raise Exception(f"Demasiados huecos ({len(missing_indices)}) para ARIMA eficiente.")
+                    raise Exception(f"Demasiados huecos ({len(missing_indices)}).")
                     
             except Exception as ex_arima:
-                log.append(f"Fallback a Interpolación ({str(ex_arima)[:50]}...)")
+                log.append(f"Fallback a Interpolación.")
                 before_int = df_target['PRECIP'].isna().sum()
                 df_target['PRECIP'] = df_target['PRECIP'].interpolate(method='time', limit_direction='both')
                 filled_int = before_int - df_target['PRECIP'].isna().sum()
                 log.append(f"Rellenados Interpolación: {filled_int}")
 
-        # --- CIERRE ---
         df_target['PRECIP'] = df_target['PRECIP'].round(2)
         final_nans = df_target['PRECIP'].isna().sum()
         
         if final_nans > 0:
-            log.append(f"⚠️ ADVERTENCIA: Quedaron {final_nans} datos vacíos (NaN).")
+            log.append(f"⚠️ Quedaron {final_nans} datos vacíos.")
         else:
-            log.append("✅ Serie completada al 100%.")
+            log.append("✅ Serie completada.")
 
         pbl.value = "Consolidando..."
         page.update()

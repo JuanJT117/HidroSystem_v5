@@ -18,6 +18,28 @@ def build_analisis_view(page: ft.Page, on_back_to_menu):
     for k in keys_temp + keys_data:
         if not hasattr(page.session, k): setattr(page.session, k, None)
 
+    csv_path_txt = ft.Text("Ningún archivo seleccionado", color="grey")
+    
+    # Tablas (Contenedores)
+    data_table_raw = ft.Column(scroll=ft.ScrollMode.AUTO, controls=[ft.Text("Sin datos cargados.")])
+    data_table_stats = ft.Column(scroll=ft.ScrollMode.AUTO, controls=[ft.Text("Calculando...")]) # <--- ESTO FALTABA
+    
+    # Imágenes (Inicializar con pixel transparente o vacías)
+    hist_img = ft.Image(src_base64=TRANSPARENT_PIXEL, fit=ft.ImageFit.CONTAIN)
+    series_img = ft.Image(src_base64=TRANSPARENT_PIXEL, fit=ft.ImageFit.CONTAIN)
+    violin_img = ft.Image(src_base64=TRANSPARENT_PIXEL, fit=ft.ImageFit.CONTAIN)
+    acf_img = ft.Image(src_base64=TRANSPARENT_PIXEL, fit=ft.ImageFit.CONTAIN)
+    weibull_img = ft.Image(src_base64=TRANSPARENT_PIXEL, fit=ft.ImageFit.CONTAIN)
+    dist_img = ft.Image(src_base64=TRANSPARENT_PIXEL, fit=ft.ImageFit.CONTAIN)
+    annual_img = ft.Image(src_base64=TRANSPARENT_PIXEL, fit=ft.ImageFit.CONTAIN)
+    
+    # Botones de Navegación (para deshabilitarlos en reset)
+    btn_nav_filt = ft.NavigationRailDestination(icon=ft.Icons.FILTER_ALT, label="Filtros", disabled=True)
+    btn_nav_stats = ft.NavigationRailDestination(icon=ft.Icons.ANALYTICS, label="Estadística", disabled=True)
+    btn_nav_graphs = ft.NavigationRailDestination(icon=ft.Icons.SHOW_CHART, label="Gráficos", disabled=True)
+    btn_nav_lluvias = ft.NavigationRailDestination(icon=ft.Icons.WATER_DROP, label="Probabilidad", disabled=True)
+    btn_nav_cuenca = ft.NavigationRailDestination(icon=ft.Icons.LANDSCAPE, label="Cuenca", disabled=True)
+    
     # 2. Visual Helpers
     def safe_img(session_key, h=400):
         val = getattr(page.session, session_key, None)
@@ -228,5 +250,36 @@ def build_analisis_view(page: ft.Page, on_back_to_menu):
                 if page.session.df_maximos_mensuales is not None:
                     run_cuenca(None) # Genera Cuenca (PDR/IDF)
 
-    rail = ft.NavigationRail(selected_index=0, label_type=ft.NavigationRailLabelType.ALL, min_width=100, min_extended_width=400, leading=ft.Column([ft.IconButton(ft.Icons.ARROW_BACK, on_click=on_back_to_menu), ft.Text("Análisis")], spacing=10), destinations=[ft.NavigationRailDestination(icon=i, label=l) for i,l in [(ft.Icons.INPUT,"Carga"), (ft.Icons.FILTER_LIST,"Filtrado"), (ft.Icons.ANALYTICS,"Stats"), (ft.Icons.IMAGE,"Gráficos"), (ft.Icons.WATER_DROP,"Lluvias"), (ft.Icons.MAP,"Cuenca")]], on_change=lambda e: change_view(e.control.selected_index))
+    # --- FUNCIÓN DE REINICIO (NUEVA) ---
+    # 1. Función on_reset (dentro de build_analisis_view)
+    def on_reset(e):
+        keys_to_clear = ["df_procesado", "df_filtrado", "df_estadisticas", "df_homogeneidad", "df_acf", "df_ajustes", "df_weibull", "df_maximos_mensuales", "best_fit_name", "df_altura", "df_intensidad"]
+        for k in keys_to_clear: setattr(page.session, k, None)
+        
+        # Reset UI
+        csv_path_txt.value = "Ningún archivo seleccionado"
+        data_table_raw.controls = [ft.Text("Sin datos cargados.")]
+        data_table_stats.controls = [ft.Text("Calculando...")]
+        btn_nav_filt.disabled = True
+        btn_nav_stats.disabled = True
+        
+        rail.selected_index = 0
+        change_view(0)
+        page.snack_bar = ft.SnackBar(ft.Text("Módulo Reiniciado"), bgcolor="red")
+        page.snack_bar.open = True
+        page.update()
+    
+    rail = ft.NavigationRail(selected_index=0, label_type=ft.NavigationRailLabelType.ALL, min_width=100, min_extended_width=400, 
+                             leading=ft.Column([ft.IconButton(ft.Icons.ARROW_BACK, on_click=on_back_to_menu), ft.Text("Análisis")], spacing=10), destinations=[ft.NavigationRailDestination(icon=i, label=l) for i,l in [(ft.Icons.INPUT,"Carga"), (ft.Icons.FILTER_LIST,"Filtrado"), (ft.Icons.ANALYTICS,"Stats"), (ft.Icons.IMAGE,"Gráficos"), (ft.Icons.WATER_DROP,"Lluvias"), (ft.Icons.MAP,"Cuenca")]], on_change=lambda e: change_view(e.control.selected_index),
+                            trailing=ft.Column([
+                            ft.Divider(),
+                            ft.IconButton(
+                                icon=ft.Icons.RESTART_ALT, 
+                                tooltip="Reiniciar Módulo", 
+                                on_click=on_reset, # Llamar a la función de limpieza local
+                                icon_color="red"
+                            ),
+            ft.Text("Reiniciar", size=10, color="red")
+        ], alignment=ft.MainAxisAlignment.END, spacing=5) )
+    
     return ft.Row([rail, ft.VerticalDivider(width=1), ft.Column(views, expand=True)], expand=True)

@@ -180,22 +180,68 @@ def _generate_cuenca_plots(df_altura_in, df_intensidad_in, ylim_altura, ylim_int
 # --- Lógica Específica de Distribución ---
 
 def _run_log_pearson(df_maximos_mensuales, log_list):
-    log_list.append("### Ejecutando análisis para Log-Pearson III...")
+    log_list.append("### Ejecutando análisis para Log-Pearson III (Dinámico)...")
+    
+    # 1. Transformación Logarítmica
     df_maximos_mensuales['Ln_Max_Anual'] = np.log(df_maximos_mensuales['Max_Anual'])
     
+    # 2. Cálculo de Estadísticos de la serie transformada
     Promedio_Ln_Max_Anual = df_maximos_mensuales['Ln_Max_Anual'].mean()
-    Desviacion_estandar_Ln_Max_Anual = df_maximos_mensuales['Ln_Max_Anual'].std()
-    KLP3TR2 = -0.017
-    KLP3TR10 = 1.3010
-    KLP3TR100 = 2.4720
+    Desviacion_estandar_Ln_Max_Anual = df_maximos_mensuales['Ln_Max_Anual'].std(ddof=1) # Desviación muestral
+    Coeficiente_Asimetria = df_maximos_mensuales['Ln_Max_Anual'].skew() # Asimetría (g)
+    
+    log_list.append(f"Media Ln: {Promedio_Ln_Max_Anual:.4f}")
+    log_list.append(f"Desv. Est. Ln: {Desviacion_estandar_Ln_Max_Anual:.4f}")
+    log_list.append(f"Coef. Asimetría (g): {Coeficiente_Asimetria:.4f}")
+
+    # 3. Función interna para calcular K (Aproximación Kite + Abramowitz-Stegun)
+    def calcular_k_kite(Tr, g):
+        # Paso A: Calcular z (Normal Estándar) usando Abramowitz & Stegun
+        # Probabilidad de excedencia p = 1/Tr
+        # Formula: w = sqrt(ln(1 / p^2))
+        prob = 1.0 / Tr
+        w = np.sqrt(np.log(1.0 / (prob**2)))
+        
+        numerator = 2.515517 + (0.802853 * w) + (0.010328 * (w**2))
+        denominator = 1.0 + (1.432788 * w) + (0.189269 * (w**2)) + (0.001308 * (w**3))
+        
+        z = w - (numerator / denominator)
+        
+        # Paso B: Calcular K ajustado por Asimetría (Ecuación de Kite)
+        if abs(g) < 0.00001: # Si asimetría es 0, K = z (Log-Normal)
+            return z
+        
+        k_val = g / 6.0
+        A = (z**2) - 1.0
+        B = (1.0/3.0) * ((z**3) - (6.0 * z))
+        
+        # Kt = z + A*k + B*k^2 - A*k^3 + z*k^4 + 1/3*k^5
+        Kt = z + (A * k_val) + (B * (k_val**2)) - (A * (k_val**3)) + (z * (k_val**4)) + ((1.0/3.0) * (k_val**5))
+        
+        return Kt
+
+    # 4. Cálculo dinámico de los Factores de Frecuencia (K)
+    KLP3TR2 = calcular_k_kite(2, Coeficiente_Asimetria)
+    KLP3TR10 = calcular_k_kite(10, Coeficiente_Asimetria)
+    KLP3TR100 = calcular_k_kite(100, Coeficiente_Asimetria)
+    
+    log_list.append(f"Factor K (2 años): {KLP3TR2:.4f}")
+    log_list.append(f"Factor K (10 años): {KLP3TR10:.4f}")
+    log_list.append(f"Factor K (100 años): {KLP3TR100:.4f}")
+
     Cociente_lluvia_duracion = 0.3882
     
-    p_r_f = (np.exp(Promedio_Ln_Max_Anual + (KLP3TR100 * Desviacion_estandar_Ln_Max_Anual))) / (np.exp(Promedio_Ln_Max_Anual + (KLP3TR10 * Desviacion_estandar_Ln_Max_Anual)))
-    AP_60_2 = (np.exp(Promedio_Ln_Max_Anual + (KLP3TR2 * Desviacion_estandar_Ln_Max_Anual))) * Cociente_lluvia_duracion
+    # 5. Cálculo de Precipitación para cada TR (X = exp(Media + K*Desv))
+    val_tr100 = np.exp(Promedio_Ln_Max_Anual + (KLP3TR100 * Desviacion_estandar_Ln_Max_Anual))
+    val_tr10 = np.exp(Promedio_Ln_Max_Anual + (KLP3TR10 * Desviacion_estandar_Ln_Max_Anual))
+    val_tr2 = np.exp(Promedio_Ln_Max_Anual + (KLP3TR2 * Desviacion_estandar_Ln_Max_Anual))
+    
+    # 6. Cálculo de parámetros finales
+    p_r_f = val_tr100 / val_tr10
+    AP_60_2 = val_tr2 * Cociente_lluvia_duracion
     AP_60_10 = AP_60_2 * (0.35 * np.log(10) + 0.76) * (0.54 * (60 ** 0.25) - 0.5)
 
-    log_list.append(f'Media (X): {Promedio_Ln_Max_Anual:.4f}')
-    log_list.append(f'Relación f: {p_r_f:.4f}')
+    log_list.append(f'Relación f calculada: {p_r_f:.4f}')
     
     return p_r_f, AP_60_2, AP_60_10, Cociente_lluvia_duracion
 

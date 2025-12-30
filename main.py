@@ -24,7 +24,6 @@ COLOR_GRIS_CLARO = "#BDBDBD"
 COLOR_GRIS_MEDIO = "#9E9E9E"
 FUENTE_PRINCIPAL = "Roboto Mono"
 
-# --- LISTA MAESTRA DE PERSISTENCIA ---
 SESSION_KEYS_TO_PERSIST = [
     # 1. IMPUTACIÓN
     "imput_folder_path", "imput_output_folder", "imput_station_files", "imput_map_path",
@@ -34,12 +33,17 @@ SESSION_KEYS_TO_PERSIST = [
     "df_procesado", "df_filtrado", "df_estadisticas",
     "df_homogeneidad", "df_acf", "df_ajustes", "df_weibull", 
     "df_maximos_mensuales", "best_fit_name",
-    "df_altura", "df_intensidad", 
+    "df_altura", "df_intensidad",
+    "b64_hist", "b64_series", "b64_violin", "b64_max_annual", # (Opcional: Si quieres guardar las imágenes)
     
     # 3. GASTOS
     "datos_cuencas_config", "df_cuencas_base", "df_cotas", "df_hms", 
-    "df_intensidad_gastos", "df_altura_gastos", 
-    "res_racional", "res_chow", "df_variables"
+    "df_intensidad_gastos", "df_altura_gastos",  # (Nota: Verifica si usas estos nombres o los genéricos df_intensidad/df_altura)
+    "res_racional", "res_chow", "df_variables",
+    
+    # --- NUEVAS CLAVES PARA MODO DISTRIBUIDO ---
+    "estaciones_db",      # Diccionario complejo {id: {intensidad: df, altura: df}}
+    "pesos_estaciones"    # Diccionario de pesos {cuenca_id: {estacion_id: peso}}
 ]
 
 # --- UTILERÍAS VISUALES ---
@@ -113,7 +117,7 @@ class TerminalHeader(ft.Container):
     def __init__(self):
         super().__init__()
         self.content = ft.Column([
-            ft.Text(">>> SISTEMA DE ANÁLISIS HIDROLÓGICO v6.2.1", color=COLOR_ACENTO, size=13, font_family=FUENTE_PRINCIPAL),
+            ft.Text(">>> Hydrological Data System v6.2.3", color=COLOR_ACENTO, size=13, font_family=FUENTE_PRINCIPAL),
             ft.Divider(color=COLOR_ACENTO, thickness=0.8),
         ], spacing=2)
         self.margin = ft.margin.only(bottom=20)
@@ -142,6 +146,55 @@ def main(page: ft.Page):
     # --- LOADING UI ---
     loading_bar = ft.ProgressBar(width=400, color=COLOR_ACENTO, bgcolor="#222222", value=0)
     loading_text = ft.Text("Procesando...", font_family=FUENTE_PRINCIPAL, color=COLOR_ACENTO)
+    
+    # --- EASTER EGG: PROTOCOLO TLÁLOC (VISUAL) ---
+    egg_clicks = 0
+    
+    def trigger_tlaloc_protocol(e):
+        nonlocal egg_clicks
+        egg_clicks += 1
+        
+        if egg_clicks >= 70:
+            egg_clicks = 0 # Reiniciar contador
+            
+            # Contenedor para la imagen GIF
+            # Asegúrate de que el archivo esté en la carpeta assets con este nombre
+            gif_image = ft.Image(
+                src="tlaloc_egg.gif",  # <--- AQUÍ VA EL NOMBRE DE TU ARCHIVO
+                fit=ft.ImageFit.CONTAIN,
+                width=600,
+                height=400,
+                border_radius=10,
+            )
+            
+            # Diálogo Modal con fondo transparente para resaltar el Pixel Art
+            egg_dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("⚠️ PROTOCOLO TLÁLOC ACTIVADO ⚠️", color="#00ff41", font_family="Roboto Mono", text_align=ft.TextAlign.CENTER),
+                content=ft.Container(
+                    content=gif_image,
+                    alignment=ft.alignment.center,
+                    padding=10,
+                    # Borde verde neón sutil para estilo Cyberpunk
+                    border=ft.border.all(1, "#00ff41"), 
+                    border_radius=10,
+                    bgcolor="black"
+                ),
+                actions=[
+                    ft.TextButton("CERRAR CONEXIÓN", on_click=lambda e: page.close(egg_dialog), style=ft.ButtonStyle(color="#00ff41"))
+                ],
+                actions_alignment=ft.MainAxisAlignment.CENTER,
+                bgcolor="#050505", # Fondo oscuro del diálogo
+            )
+            
+            page.overlay.append(egg_dialog)
+            egg_dialog.open = True
+            page.update()
+            
+            # Snack bar opcional para confirmar
+            page.snack_bar = ft.SnackBar(ft.Text("Conexión con el núcleo establecida..."), bgcolor="#00ff41", open=True)
+            page.update()
+    
     
     loading_dialog = ft.AlertDialog(
         modal=True,
@@ -315,8 +368,8 @@ def main(page: ft.Page):
             ft.Icon(ft.Icons.INFO_OUTLINE, size=60, color=COLOR_ACENTO),
             ft.Text("ACERCA DE", size=30, weight="bold", color="white"),
             ft.Divider(color=COLOR_ACENTO),
-            ft.Text("SISTEMA DE ANÁLISIS HIDROLÓGICO", size=20, color=COLOR_ACENTO),
-            ft.Text("Versión 6.2.1", color=COLOR_GRIS_CLARO),
+            ft.Text("Hydrological Data System", size=20, color=COLOR_ACENTO),
+            ft.Text("Versión 6.2.3", color=COLOR_GRIS_CLARO),
             ft.Container(height=20),
             ft.Text("Desarrollado para:", color=COLOR_GRIS_MEDIO),
             ft.Text("GEOGRAFICA S.A. DE C.V.", size=25, weight="bold", color="white"),
@@ -340,7 +393,15 @@ def main(page: ft.Page):
     menu_view.content = ft.Container(
         content=ft.Column([
             TerminalHeader(),
-            ft.Image(src="path19.jpg", width=30, fit=ft.ImageFit.CONTAIN), 
+            ft.Container(
+                content=ft.Image(src="path19.jpg", width=30, fit=ft.ImageFit.CONTAIN),
+                on_click=trigger_tlaloc_protocol, # <--- Llama a la nueva función del GIF
+                tooltip="Iniciando sistema...",
+                padding=5,
+                border_radius=50,
+                ink=True 
+            ),
+            #ft.Image(src="path19.jpg", width=30, fit=ft.ImageFit.CONTAIN), 
             ft.Text("ANÁLISIS HIDROLÓGICO", size=20, weight="bold", color="white"),
             ft.Divider(height=2, color="transparent"),
             btn_imp,
