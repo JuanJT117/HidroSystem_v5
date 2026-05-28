@@ -76,7 +76,7 @@ class TerminalHeader(ft.Container):
     def __init__(self, version="10.5.2"):
         super().__init__()
         self.content = ft.Column([
-            ft.Text(f">>> Hydrological Data System v{version}", color=COLOR_ACENTO, size=22, font_family=FUENTE_PRINCIPAL),
+            ft.Text(f">>> HyDaS v{version}", color=COLOR_ACENTO, size=22, font_family=FUENTE_PRINCIPAL),
             ft.Divider(color=COLOR_ACENTO, thickness=0.8),
         ], spacing=2)
         self.margin = ft.margin.only(bottom=10)
