@@ -27,7 +27,7 @@ class NumpyEncoder(json.JSONEncoder):
 
 class ProjectManager:
     """
-    Motor de Base de Datos y Persistencia para HidroSistem v10.9.
+    Motor de Base de Datos y Persistencia para HyDaS v10.9.
     Utiliza compresión LZMA (.xz) mediante el formato tarfile.
     SEGURO: No usa pickle. Guarda DataFrames en formato Parquet.
     """
@@ -208,7 +208,7 @@ class ProjectManager:
                 if tree_file is None:
                     manifest_file = tar.extractfile("manifest.json")
                     if manifest_file:
-                        raise RuntimeError("Formato obsoleto. HidroSistem v10.9 no soporta proyectos antiguos por seguridad.")
+                        raise RuntimeError("Formato obsoleto. HyDaS v10.9 no soporta proyectos antiguos por seguridad.")
                     else:
                         raise ValueError("Archivo corrupto: No se encontró session_tree.json")
                     
@@ -265,7 +265,7 @@ class ProjectManager:
                             filename = node["file"]
                             extracted_zip = tar.extractfile(filename)
                             if extracted_zip:
-                                temp_dir = tempfile.mkdtemp(prefix="HidroSistem_Txt_")
+                                temp_dir = tempfile.mkdtemp(prefix="HyDaS_Txt_")
                                 atexit.register(lambda: shutil.rmtree(temp_dir, ignore_errors=True))
                                 with zipfile.ZipFile(extracted_zip, 'r') as zf:
                                     zf.extractall(temp_dir)
