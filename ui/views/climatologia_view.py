@@ -162,7 +162,7 @@ def build_climatologia_view(page: ft.Page, on_back_to_menu=None):
         b64_img = climatologia_logic.generar_climograma_b64(df_normales, titulo_estacion=estado["nombre_estacion"])
         
         # Generamos una bóveda temporal estricta para esta sesión
-        cache_dir = os.path.join(tempfile.gettempdir(), "HidroSistem_Clima_Cache")
+        cache_dir = os.path.join(tempfile.gettempdir(), "HyDaS_Clima_Cache")
         os.makedirs(cache_dir, exist_ok=True)
         
         # Sanitizamos (Forzamos strings) y guardamos en disco para no ahogar la RAM
