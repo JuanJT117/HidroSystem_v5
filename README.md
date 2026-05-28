@@ -1,4 +1,4 @@
-# HidroSistem - Documentación Técnica y Guía de Despliegue
+# HyDaS - Documentación Técnica y Guía de Despliegue
 
 ## Resumen de Módulos
 
