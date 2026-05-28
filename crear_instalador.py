@@ -3,12 +3,12 @@ import subprocess
 
 # Este es el código nativo del instalador NSIS
 nsi_script = """
-!define APPNAME "HidroSistem"
+!define APPNAME "HyDaS"
 !define APPVERSION "10.9"
-!define EXECUTABLE "HidroSistem_v10.9.exe"
+!define EXECUTABLE "HyDaS_v10.9.exe"
 
 Name "${APPNAME} v${APPVERSION}"
-OutFile "Instalador_HidroSistem_10.9.exe"
+OutFile "HyDaS_10.9.exe"
 InstallDir "$PROGRAMFILES64\\${APPNAME}"
 
 RequestExecutionLevel admin
@@ -61,6 +61,6 @@ nsis_path = r"C:\Program Files (x86)\NSIS\makensis.exe"
 
 try:
     subprocess.run([nsis_path, "setup.nsi"], check=True)
-    print("✅ ¡Instalador 'Instalador_HidroSistem_10.9.exe' creado con éxito!")
+    print("✅ ¡Instalador 'HyDaS_10.9.exe' creado con éxito!")
 except Exception as e:
     print(f"❌ Error al compilar: {e}")
