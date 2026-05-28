@@ -27,7 +27,7 @@ class NumpyEncoder(json.JSONEncoder):
 
 class ProjectManager:
     """
-    Motor de Base de Datos y Persistencia para HidroSistem v10.5.
+    Motor de Base de Datos y Persistencia para HidroSistem v10.9.
     Utiliza compresión LZMA (.xz) mediante el formato tarfile.
     SEGURO: No usa pickle. Guarda DataFrames en formato Parquet.
     """
@@ -208,7 +208,7 @@ class ProjectManager:
                 if tree_file is None:
                     manifest_file = tar.extractfile("manifest.json")
                     if manifest_file:
-                        raise RuntimeError("Formato obsoleto. HidroSistem v10.5 no soporta proyectos antiguos por seguridad.")
+                        raise RuntimeError("Formato obsoleto. HidroSistem v10.9 no soporta proyectos antiguos por seguridad.")
                     else:
                         raise ValueError("Archivo corrupto: No se encontró session_tree.json")
                     
