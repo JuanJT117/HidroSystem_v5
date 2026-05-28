@@ -500,14 +500,28 @@ def main(page: ft.Page):
                 except Exception as ex:
                     _log(f"❌ Error crítico de infraestructura: {str(ex)}")
                     traceback.print_exc()
+                    
+                    # 1. Mostramos el error en la UI de inmediato (Sin bloquear el GIL de Flet)
                     def _show_err():
                         page.snack_bar = ft.SnackBar(ft.Text(f"Error fatal al cargar: {str(ex)}"), bgcolor="red")
                         page.snack_bar.open = True
                         page.update()
-                        time.sleep(3) # Dar tiempo de leer el error
-                        overlay_carga_proyecto.visible = False
-                        page.update()
                     page.run_thread(_show_err)
+                    
+                    # 2. El hilo en background (Demonio) asume la pausa térmica de 4 segundos. 
+                    # La UI (Flet) queda totalmente libre y responsiva.
+                    time.sleep(4) 
+                    
+                    # 3. Restauramos la UI purgando la memoria corrupta para permitir un nuevo intento
+                    def _reset_after_error():
+                        overlay_carga_proyecto.visible = False
+                        # Limpiar punteros para no dejar el sistema en un estado "zombie"
+                        page.session.set("current_project_path", None)
+                        terminal_carga.controls.clear()
+                        pb_carga_proyecto.value = 0
+                        txt_porcentaje_carga.value = "0%"
+                        page.update()
+                    page.run_thread(_reset_after_error)
 
             # Detonamos el proceso en el Background
             threading.Thread(target=_task, daemon=True).start()
@@ -580,7 +594,7 @@ def main(page: ft.Page):
                 gc.collect()
 
                 if not exito:
-                    raise IOError("Fallo en la compresión LZMA o serialización JSON. El archivo no se guardó correctamente.")
+                    raise IOError("Fallo en la compresión LZMA. El archivo no se guardó correctamente.")
                 
                 # Función segura para actualizar Flet desde otro hilo
                 def _show_success():
