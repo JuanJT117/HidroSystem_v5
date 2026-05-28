@@ -32,7 +32,7 @@ Para garantizar una compilación estable, debes clonar un entorno aislado en Ana
 1. Abre **Anaconda Prompt** o **PowerShell Prompt** desde Anaconda Navigator (asegúrate de iniciarlo como Administrador si es posible).
 2. Navega a la carpeta raíz del proyecto (donde se encuentra `assets/environment.yml`):
    ```powershell
-   cd "C:\Ruta\A\Tu\Proyecto\HidroSistem"
+   cd "C:\Ruta\A\Tu\Proyecto\HyDaS"
    ```
 3. Crea el entorno leyendo el archivo de configuración `environment.yml` proporcionado:
    ```powershell
@@ -51,10 +51,10 @@ Con el entorno activado, usaremos `flet pack` (que internamente llama a PyInstal
 Es vital incluir todas las librerías matemáticas ocultas (hidden imports) para que PyInstaller no las omita durante la compilación. Ejecuta el siguiente comando completo en tu terminal:
 
 ```powershell
-flet pack main.py --name "HidroSistem_v10.9" --add-data "assets;assets" --hidden-import "pandas" --hidden-import "numpy" --hidden-import "scipy" --hidden-import "scipy.interpolate" --hidden-import "scipy.stats" --hidden-import "statsmodels" --hidden-import "sklearn" --hidden-import "pmdarima" --hidden-import "matplotlib" --hidden-import "matplotlib.backends.backend_agg" --hidden-import "matplotlib.pyplot" --hidden-import "seaborn" --hidden-import "folium" --hidden-import "geopy" --hidden-import "shapefile" --hidden-import "shapely" --hidden-import "tabulate" --hidden-import "requests" --hidden-import "jinja2" --hidden-import "openpyxl" --hidden-import "pyarrow" --icon "assets/icon.ico"
+flet pack main.py --name "HyDaS_v10.9" --add-data "assets;assets" --hidden-import "pandas" --hidden-import "numpy" --hidden-import "scipy" --hidden-import "scipy.interpolate" --hidden-import "scipy.stats" --hidden-import "statsmodels" --hidden-import "sklearn" --hidden-import "pmdarima" --hidden-import "matplotlib" --hidden-import "matplotlib.backends.backend_agg" --hidden-import "matplotlib.pyplot" --hidden-import "seaborn" --hidden-import "folium" --hidden-import "geopy" --hidden-import "shapefile" --hidden-import "shapely" --hidden-import "tabulate" --hidden-import "requests" --hidden-import "jinja2" --hidden-import "openpyxl" --hidden-import "pyarrow" --icon "assets/icon.ico"
 ```
 
-Este proceso tomará algunos minutos (el archivo puede pesar ~300-500 MB). Al finalizar, se creará una carpeta llamada `dist/` en la cual estará alojado tu archivo **`HidroSistem_v10.9.exe`**.
+Este proceso tomará algunos minutos (el archivo puede pesar ~300-500 MB). Al finalizar, se creará una carpeta llamada `dist/` en la cual estará alojado tu archivo **`HyDaS_v10.9.exe`**.
 
 ### 3. Creación del Instalador Oficial (NSIS Setup)
 Para distribuir la aplicación a usuarios finales sin complicaciones, el proyecto cuenta con un script de automatización (`crear_instalador.py`) que genera un instalador tradicional (setup) usando NSIS. Este instalador agregará tu software a "Archivos de Programa", creará accesos directos en el escritorio e incluirá un desinstalador oficial de Windows.
@@ -64,4 +64,4 @@ Para distribuir la aplicación a usuarios finales sin complicaciones, el proyect
    ```powershell
    python crear_instalador.py
    ```
-3. Si el proceso es exitoso, verás un mensaje de validación y se generará un archivo llamado **`Instalador_HidroSistem_10.9.exe`** en la raíz del proyecto. Este es el instalador final que puedes subir a las Releases de GitHub o enviarle a tus usuarios.
+3. Si el proceso es exitoso, verás un mensaje de validación y se generará un archivo llamado **`HyDaS_10.9.exe`** en la raíz del proyecto. Este es el instalador final que puedes subir a las Releases de GitHub o enviarle a tus usuarios.
