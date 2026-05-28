@@ -67,7 +67,7 @@ from ui.views.climatologia_view import build_climatologia_view
 
 def main(page: ft.Page):
     # --- CONFIGURACIÓN DE PÁGINA ---
-    page.title = "Hydrological Data System v10.9"
+    page.title = "HyDaS v10.9"
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = COLOR_FONDO
     page.window_width = 1200
