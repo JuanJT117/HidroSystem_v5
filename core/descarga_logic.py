@@ -12,6 +12,14 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import shapefile 
 from shapely.geometry import shape, Point 
+import shutil
+
+import datetime, re, io
+import matplotlib
+import matplotlib.pyplot as plt
+import seaborn as sns
+matplotlib.use('Agg')
+from core import generador_pdf
 
 # --- 1. RESOLUCIÓN ABSOLUTA DE RUTAS (DevSecOps & PyInstaller) ---
 # Si se ejecuta como .exe (PyInstaller), sys.frozen es True y los assets están en sys._MEIPASS
@@ -49,6 +57,32 @@ BBOX_MEXICO = {"min_x": -118.5, "max_x": -86.5, "min_y": 14.5, "max_y": 33.0}
 escritura_lock = threading.Lock()
 # Señal de interrupción de emergencia
 señal_abortar = threading.Event()
+
+def obtener_clave_estado(nombre_shp):
+    """
+    Normalizador heurístico (Fuzzy Matcher) para resolver conflictos entre 
+    nombres INEGI (Shapefiles en Mayúsculas/Sufijos) y el catálogo CONAGUA.
+    """
+    if not nombre_shp: return ""
+    t = str(nombre_shp).lower().replace('á','a').replace('é','e').replace('í','i').replace('ó','o').replace('ú','u').strip()
+    
+    # 1. Resolver discrepancias oficiales absolutas (INEGI vs SMN)
+    if "mexico" in t and "ciudad" not in t and "df" not in t: return "mex"
+    if "ciudad de mexico" in t or "distrito federal" in t or t == "cdmx": return "df"
+    if "coahuila" in t: return "coah"
+    if "michoacan" in t: return "mich"
+    if "veracruz" in t: return "ver"
+    if "queretaro" in t: return "qro"
+    
+    # 2. Búsqueda flexible blindada contra "Canibalismo de subcadenas"
+    # Ordenamos el catálogo por longitud de mayor a menor.
+    # Así "Baja California Sur" se evalúa estrictamente antes que "Baja California".
+    for nombre_cat, clave in sorted(CATALOGO_ESTADOS_CONAGUA.items(), key=lambda x: len(x[0]), reverse=True):
+        nom_limpio = nombre_cat.lower().replace('á','a').replace('é','e').replace('í','i').replace('ó','o').replace('ú','u')
+        if nom_limpio in t or t in nom_limpio:
+            return clave
+            
+    return ""
 
 # --- 3. MOTOR ESPACIAL (Pyshp y Shapely) ---
 def cargar_poligonos(modo):
@@ -176,77 +210,111 @@ def descargar_y_procesar_estacion(url_archivo, clave_estado, poligonos_cuencas):
     # Si falla 4 veces, lo ignoramos para no frenar el enjambre
     return False, None, None
 
+# =======================================================
+# 4.5 MOTOR DE INDEXACIÓN EN MEMORIA (In-Memory)
+# =======================================================
+def indexar_base_datos_tar(ruta_tar, poligonos_cuencas, callback_log, callback_progreso):
+    """Escanea la cabecera de cada archivo en el tar.xz y reconstruye el DataFrame."""
+    if not os.path.exists(ruta_tar): return None
+        
+    registros = []
+    try:
+        with tarfile.open(ruta_tar, "r:xz") as tar:
+            miembros = [m for m in tar.getmembers() if m.isfile() and m.name.endswith('.txt')]
+            total = len(miembros)
+            
+            for i, miembro in enumerate(miembros):
+                if señal_abortar.is_set(): return None
+                    
+                partes = miembro.name.split('/')
+                if len(partes) != 2: continue
+                
+                f = tar.extractfile(miembro)
+                if not f: continue
+                
+                # REGLA ZERO-TRUST: Leer solo cabecera (400 bytes) para no colapsar la RAM
+                cabecera = f.read(400).decode('utf-8', errors='ignore')
+                meta = extraer_metadata(cabecera)
+                meta["clave"] = partes[1].replace('.txt', '').replace('dia', '')
+                meta["estado_origen"] = partes[0].upper()
+                meta["cuenca_id"], meta["cuenca_nombre"] = "No Asignada", "No Asignada"
+                
+                # Geocruce en tiempo real 
+                if meta["lat"] and meta["lon"] and poligonos_cuencas:
+                    lon_real = meta["lon"] if meta["lon"] < 0 else -meta["lon"]
+                    pol_detectado = detectar_clic_poligono(poligonos_cuencas, lon_real, meta["lat"])
+                    if pol_detectado:
+                        meta["cuenca_id"], meta["cuenca_nombre"] = pol_detectado["id"], pol_detectado["nombre"]
+                
+                registros.append(meta)
+                if i % 50 == 0 or i == total - 1: callback_progreso((i + 1) / total)
+
+        df = pd.DataFrame(registros)
+        columnas = ["lat", "lon", "estado", "nombre", "clave", "estado_origen", "cuenca_id", "cuenca_nombre"]
+        for col in columnas:
+            if col not in df.columns: df[col] = "Desconocido"
+        return df[columnas]
+    except Exception as e:
+        callback_log(f"> [ERROR CRÍTICO] Fallo de indexación LZMA: {e}")
+        return None
+
 # --- 5. ORQUESTADOR PRINCIPAL ---
-def procesar_descarga(modo, elementos, ruta_base, callback_log, callback_progreso, callback_mapa=None, carpeta_previa=None):
+def procesar_descarga(modo, elementos, ruta_tar_target, df_catalogo, callback_log, callback_progreso, callback_mapa=None, carpeta_previa=None):
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     señal_abortar.clear() 
-    
-    # CORRECCIÓN DE ERROR CRÍTICO: Definimos las rutas aquí afuera para que todos los modos las vean
-    ruta_tar = os.path.join(ruta_base, "Tlaloc_BD_Nacional_Comprimida.tar.xz")
-    ruta_csv = os.path.join(BASE_DIR, "assets", "catalogo_tlaloc.csv")
 
     try:
         if modo == "RESPALDO MASIVO":
             callback_log(f"> ---------------------------------------")
             callback_log(f"> INICIANDO PROTOCOLO DE RESPALDO MASIVO (LZMA)")
             
+            ruta_base = os.path.dirname(ruta_tar_target)
             os.makedirs(ruta_base, exist_ok=True)
             
-            # Cargar Cuencas para el Cruce
             poligonos_cuencas = []
             try: 
                 poligonos_cuencas = cargar_poligonos("POR CUENCA")
                 callback_log(f"> Capa de Cuencas cargada para cruce espacial.")
-            except: 
-                callback_log(f"> [AVISO] No se pudo cargar cuencas.shp. El catálogo no tendrá cuencas.")
+            except: pass
             
             todas_las_urls = []
             callback_log(f"> 🔍 Cargando Lista estaciones publicas de CONAGUA...")
-            
-            # Ubicar el archivo maestro de CONAGUA en assets/
             ruta_txt_estaciones = os.path.join(BASE_DIR, "assets", "Claves-Estaciones-CONAGUA.txt")
             if not os.path.exists(ruta_txt_estaciones):
                 callback_log(f"> [CRÍTICO] No se encontró el catálogo {ruta_txt_estaciones}.")
-                return None
+                return None, None
                 
             try:
-                # REGLA ZERO-TRUST: Tolerancia a codificaciones (UTF-8 vs Windows-1252/ANSI)
-                # Aplicamos EAFP para esquivar crasheos por acentos (ej. la "ó" en 0xf3)
-                try:
-                    df_estaciones = pd.read_csv(ruta_txt_estaciones, sep='\t', encoding='utf-8')
-                except UnicodeDecodeError:
-                    df_estaciones = pd.read_csv(ruta_txt_estaciones, sep='\t', encoding='latin1')
+                # 1. ESCUDO PANDAS: Forzamos la lectura como cadena de texto pura (dtype=str)
+                try: df_estaciones = pd.read_csv(ruta_txt_estaciones, sep='\t', encoding='utf-8', dtype=str)
+                except UnicodeDecodeError: df_estaciones = pd.read_csv(ruta_txt_estaciones, sep='\t', encoding='latin1', dtype=str)
                 
-                # Normalizamos nombres de columnas por si el TXT tiene espacios ocultos
                 df_estaciones.columns = [str(c).strip() for c in df_estaciones.columns]
-                
                 for _, row in df_estaciones.iterrows():
                     clave_estado = str(row['Clave estado']).strip().lower()
-                    clave_estacion = str(row['Clave']).strip()
+                    
+                    # 2. ESCUDO DE INTEGRIDAD: Forzamos los 5 dígitos rellenando con ceros a la izquierda.
+                    # Esto repara las URLs de los estados 01 al 09 (ej. dia1001.txt -> dia01001.txt)
+                    clave_estacion = str(row['Clave']).split('.')[0].strip().zfill(5)
                     
                     if clave_estado in CATALOGO_ESTADOS_CONAGUA.values():
                         url = f"https://smn.conagua.gob.mx/tools/RESOURCES/Normales_Climatologicas/Diarios/{clave_estado}/dia{clave_estacion}.txt"
                         todas_las_urls.append((url, clave_estado))
-                        
             except Exception as e:
-                callback_log(f"> [ERROR CRÍTICO] Fallo al parsear la Lista de estaciones CONAGUA: {e}")
-                return None
+                callback_log(f"> [ERROR CRÍTICO] Fallo al parsear la Lista de estaciones: {e}")
+                return None, None
             
             total_urls = len(todas_las_urls)
-            callback_log(f"> 📍 Lista validada de estaciones publicas de CONAGUA: {total_urls} estaciones a descargar.")
+            callback_log(f"> 📍 Lista validada: {total_urls} estaciones a descargar.")
             
-            # Calcular el total real por estado para la barra de progreso
             progreso_estados = {}
             for clave in CATALOGO_ESTADOS_CONAGUA.values():
                 total_est = sum(1 for u, c in todas_las_urls if c == clave)
                 progreso_estados[clave.upper()] = {"procesados": 0, "total": total_est if total_est > 0 else 1}
             
-            estaciones_procesadas = 0
-            exitosos = 0
-            registros_catalogo = []
+            estaciones_procesadas, exitosos, registros_catalogo = 0, 0, []
             
-            with tarfile.open(ruta_tar, "w:xz") as tar:
-                # REGLA DE SCRAPING ÉTICO: Reducimos concurrencia para no saturar al servidor de CONAGUA
+            with tarfile.open(ruta_tar_target, "w:xz") as tar:
                 with ThreadPoolExecutor(max_workers=15) as executor:
                     futuros_map = {executor.submit(descargar_y_procesar_estacion, url, clave, poligonos_cuencas): clave for url, clave in todas_las_urls}
                     
@@ -260,7 +328,6 @@ def procesar_descarga(modo, elementos, ruta_base, callback_log, callback_progres
                         progreso_estados[clave_estado.upper()]["procesados"] += 1
                         
                         exito, meta, datos_bytes = futuro.result()
-                        
                         if exito:
                             exitosos += 1
                             registros_catalogo.append(meta)
@@ -276,55 +343,44 @@ def procesar_descarga(modo, elementos, ruta_base, callback_log, callback_progres
                                 callback_mapa(porcentajes)
             
             if not señal_abortar.is_set():
-                callback_log(f"> Generando catálogo relacional...")
-                df_catalogo = pd.DataFrame(registros_catalogo)
-                df_catalogo.to_csv(ruta_csv, index=False, encoding='utf-8')
+                callback_log(f"> Generando catálogo relacional (In-Memory)...")
+                df_cat = pd.DataFrame(registros_catalogo)
+                columnas = ["lat", "lon", "estado", "nombre", "clave", "estado_origen", "cuenca_id", "cuenca_nombre"]
+                for col in columnas:
+                    if col not in df_cat.columns: df_cat[col] = "Desconocido"
+                df_cat = df_cat[columnas]
                 callback_log(f"> ✅ RESPALDO COMPLETADO. Estaciones: {exitosos}")
+                return ruta_base, df_cat
                 
-            return ruta_base
+            return None, None
 
-        # =======================================================
-        # MOTOR DE CONSULTA LOCAL (POR ESTADO Y POR CUENCA)
-        # =======================================================
         elif modo in ["POR ESTADO", "POR CUENCA"]:
             callback_log(f"> ---------------------------------------")
             callback_log(f"> INICIANDO MOTOR DE EXTRACCIÓN LOCAL ({modo})")
             
-            if not os.path.exists(ruta_tar) or not os.path.exists(ruta_csv):
-                callback_log("> [ERROR] Falta Base de Datos Local (.tar.xz o .csv).")
-                return None
+            if df_catalogo is None or df_catalogo.empty:
+                callback_log("> [ERROR] No hay un Índice HDS activo en memoria. Vincula una BD primero.")
+                return None, None
                 
-            df_catalogo = pd.read_csv(ruta_csv)
-            
-            # --- 1. Filtrado Inteligente y Resumen ---
+            if not os.path.exists(ruta_tar_target):
+                callback_log(f"> [ERROR] No se encontró el archivo de base de datos en: {ruta_tar_target}")
+                return None, None
+                
             if modo == "POR ESTADO":
-                # Limpiador de texto para evitar que falten estados por culpa de los acentos del Shapefile
-                def limpiar(t): 
-                    return str(t).lower().replace('á','a').replace('é','e').replace('í','i').replace('ó','o').replace('ú','u').strip()
-                
                 claves_seleccionadas = []
                 for e in elementos:
-                    # Buscamos la clave ignorando mayúsculas y acentos
-                    match = next((v for k, v in CATALOGO_ESTADOS_CONAGUA.items() if limpiar(k) == limpiar(e)), None)
-                    if match:
-                        claves_seleccionadas.append(match.upper())
-                    else:
-                        callback_log(f"> [AVISO] El nombre '{e}' del mapa no coincide con el catálogo.")
+                    clave = obtener_clave_estado(e)
+                    if clave: claves_seleccionadas.append(clave.upper())
+                    else: callback_log(f"> [AVISO] Zona no reconocida o fuera de México: {e}")
                 
                 df_filtro = df_catalogo[df_catalogo['estado_origen'].isin(claves_seleccionadas)]
-                
-                # Imprimir el Desglose en la Consola
                 callback_log("> --- RESUMEN DE SELECCIÓN ---")
                 conteo = df_filtro['estado_origen'].value_counts()
                 for est_clave, cant in conteo.items():
-                    # Buscar el nombre original para imprimirlo
                     nom_est = next((k for k, v in CATALOGO_ESTADOS_CONAGUA.items() if v.upper() == est_clave), est_clave)
                     callback_log(f"> 📍 {nom_est}: {cant} estaciones localizadas")
-                    
-            else: # POR CUENCA
+            else: 
                 df_filtro = df_catalogo[df_catalogo['cuenca_nombre'].isin(elementos)]
-                
-                # Imprimir el Desglose en la Consola
                 callback_log("> --- RESUMEN DE SELECCIÓN ---")
                 conteo = df_filtro['cuenca_nombre'].value_counts()
                 for cue_nom, cant in conteo.items():
@@ -332,42 +388,27 @@ def procesar_descarga(modo, elementos, ruta_base, callback_log, callback_progres
                 
             total_archivos = len(df_filtro)
             if total_archivos == 0:
-                callback_log("> [ERROR] No se encontraron estaciones en la base de datos para la zona seleccionada.")
-                return None
+                callback_log("> [ERROR] No se encontraron estaciones para la zona seleccionada.")
+                return None, None
                 
             callback_log(f"> Total a extraer de la BD: {total_archivos} archivos.")
             
-            # --- 2. Preparar Entorno Seguro ---
+            ruta_base = os.path.dirname(ruta_tar_target)
             carpeta_salida = os.path.join(ruta_base, "Tlaloc_Extraccion_Activa")
-            import shutil
-            
-            # REGLA DE PERSISTENCIA: Se elimina rmtree para permitir crecimiento acumulativo en disco duro
             os.makedirs(carpeta_salida, exist_ok=True)
             
-            # --- PROTECCIÓN VFS: Recuperar y fusionar estaciones históricas de la sesión ---
-            if carpeta_previa and os.path.exists(carpeta_previa):
-                # Evitamos bucles redundantes si las rutas físicas llegan a coincidir
-                if os.path.abspath(carpeta_previa) != os.path.abspath(carpeta_salida):
-                    callback_log("> 📚 Sincronizando historial pluvial de la sesión actual...")
-                    try:
-                        for f in os.listdir(carpeta_previa):
-                            if f.endswith(".txt"):
-                                shutil.copy(os.path.join(carpeta_previa, f), os.path.join(carpeta_salida, f))
-                    except Exception as ex:
-                        # Estilo EAFP: Continuamos si algún archivo está bloqueado para no congelar la app
-                        callback_log(f"> [AVISO] Ocurrió un conflicto menor al fusionar archivos previos: {ex}")
+            if carpeta_previa and os.path.exists(carpeta_previa) and os.path.abspath(carpeta_previa) != os.path.abspath(carpeta_salida):
+                callback_log("> 📚 Sincronizando historial pluvial de la sesión actual...")
+                try:
+                    for f in os.listdir(carpeta_previa):
+                        if f.endswith(".txt"): shutil.copy(os.path.join(carpeta_previa, f), os.path.join(carpeta_salida, f))
+                except Exception as ex:
+                    callback_log(f"> [AVISO] Ocurrió un conflicto menor al fusionar archivos previos: {ex}")
             
-            # --- 3. Generar la lista de archivos (BÚSQUEDA POR RAÍZ) ---
-            # Como los nombres (ej. 05001.txt) son únicos a nivel nacional, 
-            # buscaremos solo por nombre de archivo ignorando las carpetas.
             nombres_a_extraer = [f"{row['clave']}.txt" for _, row in df_filtro.iterrows()]
+            extraidos, faltantes = 0, 0
             
-            extraidos = 0
-            faltantes = 0
-            
-            # --- 4. Extracción del Comprimido ---
-            with tarfile.open(ruta_tar, "r:xz") as tar:
-                # Mapeamos los archivos del TAR ignorando en qué carpeta están
+            with tarfile.open(ruta_tar_target, "r:xz") as tar:
                 miembros_tar = {os.path.basename(m.name): m for m in tar.getmembers() if m.isfile()}
                 
                 for i, nombre_archivo in enumerate(nombres_a_extraer):
@@ -376,60 +417,46 @@ def procesar_descarga(modo, elementos, ruta_base, callback_log, callback_progres
                         break
                         
                     if nombre_archivo in miembros_tar:
-                        # Extraemos el archivo directamente a la RAM
                         f_in = tar.extractfile(miembros_tar[nombre_archivo])
                         if f_in:
-                            ruta_destino_txt = os.path.join(carpeta_salida, nombre_archivo)
-                            with open(ruta_destino_txt, 'wb') as f_out:
+                            with open(os.path.join(carpeta_salida, nombre_archivo), 'wb') as f_out:
                                 f_out.write(f_in.read())
                             extraidos += 1
                     else:
-                        faltantes += 1 # Si por alguna razón no está en el zip, lo contamos
+                        faltantes += 1 
                     
-                    # Actualizar barra de progreso
-                    if i % 20 == 0 or i == total_archivos - 1:
-                        callback_progreso((i + 1) / total_archivos)
+                    if i % 20 == 0 or i == total_archivos - 1: callback_progreso((i + 1) / total_archivos)
             
             callback_log(f"> ---------------------------------------")
             callback_log(f"> ✅ EXTRACCIÓN COMPLETADA.")
             callback_log(f"> Archivos desempacados y listos: {extraidos}")
+            if faltantes > 0: callback_log(f"> [AVISO] {faltantes} estaciones de la BD no estaban en el archivo.")
             
-            if faltantes > 0:
-                callback_log(f"> [AVISO] {faltantes} estaciones de la BD no estaban en el .tar.xz (Posible descarga parcial)")
-            
-            # Retornamos esta carpeta "plana" para el Módulo de Imputación
-            return carpeta_salida
-            
-        return None
-        
+            return carpeta_salida, None
+        return None, None
     except Exception as e:
         callback_log(f"> [ERROR CRÍTICO]: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return None
+        import traceback; traceback.print_exc()
+        return None, None
     
 # =======================================================
 # 6. MÓDULO DE INSPECCIÓN (SONDA EN VIVO)
 # =======================================================
 
-def obtener_catalogo_visor(modo, elementos, ruta_csv):
-    """Filtra la BD local y devuelve una lista de estaciones para el visor."""
-    if not os.path.exists(ruta_csv) or not elementos: 
+def obtener_catalogo_visor(modo, elementos, df_catalogo):
+    """Filtra la BD en memoria y devuelve una lista de estaciones para el visor."""
+    if df_catalogo is None or df_catalogo.empty or not elementos: 
         return []
         
-    df = pd.read_csv(ruta_csv)
-    
     if modo == "POR ESTADO":
-        def limpiar(t): return str(t).lower().replace('á','a').replace('é','e').replace('í','i').replace('ó','o').replace('ú','u').strip()
         claves = []
         for e in elementos:
-            match = next((v for k, v in CATALOGO_ESTADOS_CONAGUA.items() if limpiar(k) == limpiar(e)), None)
-            if match: claves.append(match.upper())
-        df_filtro = df[df['estado_origen'].isin(claves)]
+            clave = obtener_clave_estado(e)
+            if clave: claves.append(clave.upper())
+        df_filtro = df_catalogo[df_catalogo['estado_origen'].isin(claves)]
     else:
-        df_filtro = df[df['cuenca_nombre'].isin(elementos)]
+        df_filtro = df_catalogo[df_catalogo['cuenca_nombre'].isin(elementos)]
         
-    # Devolvemos una lista de diccionarios con lo básico
     return df_filtro[['nombre', 'clave', 'estado_origen']].to_dict('records')
 
 def inspeccionar_estacion_aislada(clave, estado_origen, ruta_tar):
@@ -474,187 +501,95 @@ def inspeccionar_estacion_aislada(clave, estado_origen, ruta_tar):
 # 7. MÓDULO DE AUDITORÍA PROFUNDA Y REPORTE (DEEP SCAN)
 # =======================================================
 
-def auditar_base_datos_profunda(ruta_base, ruta_salida, callback_log, callback_progreso):
-    """
-    Escaneo físico riguroso (Zero-Trust) del archivo .tar.xz.
-    Genera gráficas y compila un reporte .tex automatizado.
-    """
-    import datetime, re, io
-    import matplotlib
-    import matplotlib.pyplot as plt
-    matplotlib.use('Agg')
+def auditar_base_datos_profunda(ruta_tar, ruta_salida, callback_log, callback_progreso):
+    """Escaneo físico riguroso con extracción de KPIs Avanzados para el Dashboard DQA."""
     
-    ruta_tar = os.path.join(ruta_base, "Tlaloc_BD_Nacional_Comprimida.tar.xz")
     if not os.path.exists(ruta_tar):
-        return False, "Error: No se encontró el archivo de base de datos comprimida (.tar.xz)."
+        return False, "Error: No se encontró el archivo .tar.xz.", {}
 
-    # Estructura del Data Warehouse temporal
-    stats = {clave.upper(): {"sanas": 0, "corruptas": 0, "años_inicio": [], "años_fin": [], "nom": nom} 
-             for nom, clave in CATALOGO_ESTADOS_CONAGUA.items()}
+    # NUEVO DWH TEMPORAL: Estructura ampliada para KPIs de Alta Dirección
+    stats = {clave.upper(): {
+                "sanas": 0, "corruptas": 0, "años_inicio": [], "años_fin": [], 
+                "total_dias": 0, "nulos": 0, "outliers": 0, "max_gap": 0, "nom": nom
+             } for nom, clave in CATALOGO_ESTADOS_CONAGUA.items()}
     
-    nacional_sanas = 0
-    nacional_corruptas = 0
-
-    callback_log("> 🔎 INICIANDO MOTOR DE ESCANEO DE BAJO NIVEL (I/O)...")
+    nacional_sanas, nacional_corruptas = 0, 0
+    callback_log("> 🔎 INICIANDO MOTOR DE ESCANEO DE BAJO NIVEL (DQA KPI Extraction)...")
     señal_abortar.clear()
 
     try:
-        # FASE 1: EXTRACCIÓN Y CONTEO FÍSICO
+        # FASE 1: EXTRACCIÓN DE KPIS EN MEMORIA
         with tarfile.open(ruta_tar, "r:xz") as tar:
             miembros = tar.getmembers()
             total_archivos = len(miembros)
             
             for i, miembro in enumerate(miembros):
-                if señal_abortar.is_set():
-                    return False, "🛑 AUDITORÍA ABORTADA POR EL USUARIO."
-                
-                # Actualizar UI cada 50 archivos para no asfixiar el GIL de Flet
-                if i % 50 == 0:
-                    callback_progreso(i / total_archivos)
+                if señal_abortar.is_set(): return False, "🛑 AUDITORÍA ABORTADA.", {}
+                if i % 50 == 0: callback_progreso(i / total_archivos)
                     
-                if not miembro.isfile() or not miembro.name.endswith(".txt"):
-                    continue
+                if not miembro.isfile() or not miembro.name.endswith(".txt"): continue
                     
                 partes = miembro.name.split('/')
                 if len(partes) != 2: continue
                 estado_clave = partes[0].upper()
-                
                 if estado_clave not in stats: continue
                 
-                # REGLA ZERO-TRUST: Si el archivo pesa menos de 300 bytes, es inservible
                 if miembro.size < 300:
-                    stats[estado_clave]["corruptas"] += 1
-                    nacional_corruptas += 1
-                    continue
+                    stats[estado_clave]["corruptas"] += 1; nacional_corruptas += 1; continue
                     
-                # Leer en crudo
                 f = tar.extractfile(miembro)
                 if not f:
-                    stats[estado_clave]["corruptas"] += 1
-                    nacional_corruptas += 1
-                    continue
+                    stats[estado_clave]["corruptas"] += 1; nacional_corruptas += 1; continue
                 
                 try:
-                    # Aplicamos EAFP para esquivar caracteres extraños en los metadatos de CONAGUA
                     contenido = f.read().decode('utf-8', errors='ignore').splitlines()
-                    
-                    # Búsqueda rápida de líneas de datos válidas mediante Regex YYYY-MM-DD
                     lineas_validas = [l for l in contenido if re.match(r'^\d{4}-\d{2}-\d{2}', l)]
                     
                     if not lineas_validas or len(lineas_validas) < 30:
-                        stats[estado_clave]["corruptas"] += 1
-                        nacional_corruptas += 1
-                        continue
+                        stats[estado_clave]["corruptas"] += 1; nacional_corruptas += 1; continue
                         
-                    # Extracción de línea de tiempo
-                    fecha_inicio = lineas_validas[0].split()[0]
-                    fecha_fin = lineas_validas[-1].split()[0]
+                    fechas, valores = [], []
+                    for linea in lineas_validas:
+                        pts = linea.split()
+                        if len(pts) >= 2:
+                            fechas.append(pts[0])
+                            v_str = pts[1].lower()
+                            if v_str == 'nulo' or v_str == '-99.9':
+                                stats[estado_clave]["nulos"] += 1
+                            else:
+                                try:
+                                    v_float = float(v_str)
+                                    if v_float > 300.0: # Umbral heurístico de Huracán/Error de Sensor
+                                        stats[estado_clave]["outliers"] += 1
+                                except ValueError:
+                                    stats[estado_clave]["nulos"] += 1
                     
-                    stats[estado_clave]["años_inicio"].append(int(fecha_inicio.split('-')[0]))
-                    stats[estado_clave]["años_fin"].append(int(fecha_fin.split('-')[0]))
+                    stats[estado_clave]["total_dias"] += len(lineas_validas)
                     
-                    stats[estado_clave]["sanas"] += 1
-                    nacional_sanas += 1
+                    # Cálculo de Brecha Temporal (Gap Máximo)
+                    años_unicos = sorted(list(set([int(f.split('-')[0]) for f in fechas])))
+                    if len(años_unicos) > 1:
+                        gaps = [años_unicos[j] - años_unicos[j-1] for j in range(1, len(años_unicos))]
+                        max_g = max(gaps) - 1
+                        if max_g > stats[estado_clave]["max_gap"]: stats[estado_clave]["max_gap"] = max_g
+                        
+                    stats[estado_clave]["años_inicio"].append(años_unicos[0])
+                    stats[estado_clave]["años_fin"].append(años_unicos[-1])
+                    stats[estado_clave]["sanas"] += 1; nacional_sanas += 1
                     
                 except Exception:
-                    stats[estado_clave]["corruptas"] += 1
-                    nacional_corruptas += 1
+                    stats[estado_clave]["corruptas"] += 1; nacional_corruptas += 1
 
         callback_progreso(1.0)
-        callback_log(f"> ✅ Escaneo finalizado. Sanas: {nacional_sanas} | Corruptas: {nacional_corruptas}")
+        callback_log(f"> ✅ KPIs Calculados. Sanas: {nacional_sanas} | Corruptas: {nacional_corruptas}")
         
-        # FASE 2: GENERACIÓN DEL MOTOR GRÁFICO (Matplotlib Agg)
-        callback_log("> 📊 Generando gráficos estadísticos de alta resolución...")
-        dir_graficos = os.path.join(ruta_salida, "Graficos_Auditoria")
-        os.makedirs(dir_graficos, exist_ok=True)
+        # FASE 2: DELEGACIÓN AL MOTOR PDF
+        callback_log("> 📊 Renderizando Dashboard DQA Vectorial (FPDF2)...")
+        # --- Arquitectura Hexagonal: El Core delega la presentación visual al Adaptador PDF ---
+        ruta_pdf = generador_pdf.generar_dashboard_dqa(stats, ruta_salida, nacional_sanas, nacional_corruptas)
         
-        # 2.1 Gráfico de Pastel: Integridad Nacional
-        fig1, ax1 = plt.subplots(figsize=(6, 6))
-        ax1.pie([nacional_sanas, nacional_corruptas], labels=['Sanas/Activas', 'Corruptas/Vacías'], 
-                autopct='%1.1f%%', colors=['#00a82d', '#cc0000'], startangle=90, textprops={'color':"black"})
-        ax1.set_title("Integridad de la Base de Datos Nacional", fontweight="bold")
-        ruta_pie = os.path.join(dir_graficos, "integridad_nacional.png")
-        fig1.savefig(ruta_pie, dpi=200, bbox_inches='tight', facecolor='white')
-        plt.close(fig1)
-        
-        # 2.2 Gráfico de Barras: Densidad por Estado
-        estados_ordenados = sorted(stats.items(), key=lambda x: x[1]["sanas"], reverse=True)
-        nombres = [v["nom"][:12] for k, v in estados_ordenados if (v["sanas"] > 0 or v["corruptas"] > 0)]
-        sanas = [v["sanas"] for k, v in estados_ordenados if (v["sanas"] > 0 or v["corruptas"] > 0)]
-        
-        fig2, ax2 = plt.subplots(figsize=(10, 6))
-        ax2.barh(nombres[::-1], sanas[::-1], color='#1c75fa')
-        ax2.set_xlabel("Número de Estaciones Sanas")
-        ax2.set_title("Densidad Pluviométrica Fáctica por Estado", fontweight="bold")
-        ax2.grid(axis='x', linestyle='--', alpha=0.7)
-        ruta_barras = os.path.join(dir_graficos, "densidad_estados.png")
-        fig2.savefig(ruta_barras, dpi=200, bbox_inches='tight', facecolor='white')
-        plt.close(fig2)
-
-        # FASE 3: COMPILACIÓN LATEX
-        callback_log("> 📑 Compilando código fuente LaTeX (.tex)...")
-        
-        filas_tabla = []
-        for estado_clave, data in estados_ordenados:
-            if data["sanas"] == 0 and data["corruptas"] == 0: continue
-            
-            prom_inicio = int(sum(data["años_inicio"])/len(data["años_inicio"])) if data["años_inicio"] else "N/A"
-            prom_fin = int(sum(data["años_fin"])/len(data["años_fin"])) if data["años_fin"] else "N/A"
-            
-            filas_tabla.append(f"{data['nom']} & {data['sanas']} & {data['corruptas']} & {prom_inicio} & {prom_fin} \\\\ \\hline")
-            
-        tabla_latex = "\n".join(filas_tabla)
-        
-        plantilla_tex = fr"""\\documentclass[12pt,a4paper]{{article}}
-\\usepackage[utf8]{{inputenc}}
-\\usepackage[spanish]{{babel}}
-\\usepackage{{graphicx}}
-\\usepackage{{geometry}}
-\\geometry{{a4paper, margin=1in}}
-\\usepackage{{array}}
-
-\\title{{Auditoría Física de Base de Datos - HidroSistem Tláloc}}
-\\author{{Reporte Generado Automáticamente}}
-\\date{{\\today}}
-
-\\begin{{document}}
-\\maketitle
-
-\\section{{Resumen Ejecutivo}}
-El presente informe documenta el estado físico real de la base de datos comprimida (LZMA), evadiendo metadatos e inspeccionando el núcleo de los archivos. 
-Se han detectado \\textbf{{{nacional_sanas}}} estaciones operativas y \\textbf{{{nacional_corruptas}}} archivos corruptos/vacíos.
-
-\\begin{{figure}}[h!]
-    \\centering
-    \\includegraphics[width=0.48\\textwidth]{{Graficos_Auditoria/integridad_nacional.png}}
-    \\hfill
-    \\includegraphics[width=0.48\\textwidth]{{Graficos_Auditoria/densidad_estados.png}}
-    \\caption{{Integridad nacional (Izquierda) y Densidad operativa por Estado (Derecha).}}
-\\end{{figure}}
-
-\\newpage
-\\section{{Desglose Paramétrico por Entidad Federativa}}
-\\begin{{table}}[h!]
-\\centering
-\\renewcommand{{\\arraystretch}}{{1.3}}
-\\begin{{tabular}}{{|l|c|c|c|c|}}
-\\hline
-\\textbf{{Estado}} & \\textbf{{E. Sanas}} & \\textbf{{E. Corruptas}} & \\textbf{{Año Prom. Inicio}} & \\textbf{{Año Prom. Fin}} \\\\ \\hline
-{tabla_latex}
-\\end{{tabular}}
-\\caption{{Consolidado de auditoría física profunda por estado.}}
-\\end{{table}}
-
-\\end{{document}}
-"""
-        ruta_tex = os.path.join(ruta_salida, "Reporte_Auditoria_Tlaloc.tex")
-        with open(ruta_tex, 'w', encoding='utf-8') as f:
-            f.write(plantilla_tex)
-            
-        return True, f"Auditoría rigurosa completada. Reporte y gráficas guardados en: {ruta_salida}"
+        return True, f"Dashboard Generado en: {ruta_pdf}", stats
         
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return False, f"Error Crítico: {str(e)}"
-
+        import traceback; traceback.print_exc()
+        return False, f"Error Crítico DQA: {str(e)}", {}
