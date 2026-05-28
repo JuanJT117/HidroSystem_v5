@@ -1,4 +1,4 @@
-Instrucciones para ejecución de HidroSistem en Anaconda
+Instrucciones para ejecución de HyDaS en Anaconda
 
 1- Instalar anaconda, cualquier versión.
 2- Seleccionar la opción "Environments" en el menú izquierdo
@@ -10,34 +10,15 @@ Instrucciones para ejecución de HidroSistem en Anaconda
 8- En el menú se desplegara la carpeta, sub carpetas y archivos que se encuentran dentro de las mismas, buscamos el archivo llamado "main.py" lo abrimos de manera que podamos visualizar el código en VS Code
 9- YA abierto se habilitara un icono de "Play" en la esquina superior derecha correspondiente a "Run Python File" dando click en el se ejecutara el programa.
 
-Instrucciones para la creación del ejecutable .exe de HidroSistem en Anaconda
+Instrucciones para la creación del ejecutable .exe de HyDaS en Anaconda
 
 1- Abrir anaconda y activar el Environment del proyecto
 2- Abrir "CMD.exe Prompt" o "Powershell Prompt"
 3- Navegar mediante CD hasta la carpeta donde esta el archivo "main.py"
 4- Ejecutar el siguiente código:
 
-flet pack main.py --name "HidroSistem_v9.1" --add-data "assets;assets" --hidden-import "pandas" --hidden-import "numpy" --hidden-import "scipy" --hidden-import "statsmodels" --hidden-import "sklearn" --hidden-import "pmdarima" --hidden-import "matplotlib" --hidden-import "seaborn" --hidden-import "folium" --hidden-import "geopy" --hidden-import "shapefile" --hidden-import "shapely" --hidden-import "tabulate" --hidden-import "requests" --icon "assets/icon.ico"
 
-NOTA: este código es funcional únicamente para la Versión "HidroSistem_v9.1" 
-
-flet pack main.py --name "HidroSistem_v9.2" --add-data "assets;assets" --hidden-import "pandas" --hidden-import "numpy" --hidden-import "scipy" --hidden-import "statsmodels" --hidden-import "sklearn" --hidden-import "pmdarima" --hidden-import "matplotlib" --hidden-import "matplotlib.backends.backend_agg" --hidden-import "seaborn" --hidden-import "folium" --hidden-import "geopy" --hidden-import "shapefile" --hidden-import "shapely" --hidden-import "tabulate" --hidden-import "requests" --icon "assets/icon.ico"
-
-NOTA: este código es funcional únicamente para la Versión "HidroSistem_v9.2" 
-
-flet pack main.py --name "HidroSistem_v10" --add-data "assets;assets" --hidden-import "pandas" --hidden-import "numpy" --hidden-import "scipy" --hidden-import "statsmodels" --hidden-import "sklearn" --hidden-import "pmdarima" --hidden-import "matplotlib" --hidden-import "matplotlib.backends.backend_agg" --hidden-import "matplotlib.pyplot" --hidden-import "seaborn" --hidden-import "folium" --hidden-import "geopy" --hidden-import "shapefile" --hidden-import "shapely" --hidden-import "tabulate" --hidden-import "requests" --hidden-import "jinja2" --icon "assets/icon.ico"
-
-NOTA: este código es funcional únicamente para la Versión "HidroSistem_v9.2.1" 
-
-flet pack main.py --name "HidroSistem_v10.1" --add-data "assets;assets" --hidden-import "pandas" --hidden-import "numpy" --hidden-import "scipy" --hidden-import "scipy.interpolate" --hidden-import "statsmodels" --hidden-import "sklearn" --hidden-import "pmdarima" --hidden-import "matplotlib" --hidden-import "matplotlib.backends.backend_agg" --hidden-import "matplotlib.pyplot" --hidden-import "seaborn" --hidden-import "folium" --hidden-import "geopy" --hidden-import "shapefile" --hidden-import "shapely" --hidden-import "tabulate" --hidden-import "requests" --hidden-import "jinja2" --icon "assets/icon.ico"
-
-NOTA: este código es funcional únicamente para la Versión "HidroSistem_v10.1" 
-
-flet pack main.py --name "HidroSistem_v10.5" --add-data "assets;assets" --hidden-import "pandas" --hidden-import "numpy" --hidden-import "scipy" --hidden-import "scipy.interpolate" --hidden-import "scipy.stats" --hidden-import "statsmodels" --hidden-import "sklearn" --hidden-import "pmdarima" --hidden-import "matplotlib" --hidden-import "matplotlib.backends.backend_agg" --hidden-import "matplotlib.pyplot" --hidden-import "seaborn" --hidden-import "folium" --hidden-import "geopy" --hidden-import "shapefile" --hidden-import "shapely" --hidden-import "tabulate" --hidden-import "requests" --hidden-import "jinja2" --hidden-import "openpyxl" --icon "assets/icon.ico"
-
-NOTA: este código es funcional únicamente para la Versión "HidroSistem_v10.5" 
-
-flet pack main.py --name "HidroSistem_v10.9" --add-data "assets;assets" --hidden-import "pandas" --hidden-import "numpy" --hidden-import "scipy" --hidden-import "scipy.interpolate" --hidden-import "scipy.stats" --hidden-import "statsmodels" --hidden-import "sklearn" --hidden-import "pmdarima" --hidden-import "matplotlib" --hidden-import "matplotlib.backends.backend_agg" --hidden-import "matplotlib.pyplot" --hidden-import "seaborn" --hidden-import "folium" --hidden-import "geopy" --hidden-import "shapefile" --hidden-import "shapely" --hidden-import "tabulate" --hidden-import "requests" --hidden-import "jinja2" --hidden-import "openpyxl" --hidden-import "pyarrow" --icon "assets/icon.ico"
+flet pack main.py --name "HyDaS_v10.9" --add-data "assets;assets" --hidden-import "pandas" --hidden-import "numpy" --hidden-import "scipy" --hidden-import "scipy.interpolate" --hidden-import "scipy.stats" --hidden-import "statsmodels" --hidden-import "sklearn" --hidden-import "pmdarima" --hidden-import "matplotlib" --hidden-import "matplotlib.backends.backend_agg" --hidden-import "matplotlib.pyplot" --hidden-import "seaborn" --hidden-import "folium" --hidden-import "geopy" --hidden-import "shapefile" --hidden-import "shapely" --hidden-import "tabulate" --hidden-import "requests" --hidden-import "urllib3" --hidden-import "jinja2" --hidden-import "openpyxl" --hidden-import "pyarrow" --hidden-import "fpdf" --icon "assets/icon.ico"
 
 NOTA: este código es funcional únicamente para la Versión "HidroSistem_v10.9" 
 
