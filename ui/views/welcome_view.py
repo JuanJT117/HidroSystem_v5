@@ -48,7 +48,7 @@ def build_welcome_view(page: ft.Page, on_new_project, on_open_project):
                     ft.Text("ACERCA DE", size=30, weight="bold", color="white"),
                     ft.Divider(color=COLOR_ACENTO),
                     ft.Text("Hydrological Data System", size=20, color=COLOR_ACENTO),
-                    ft.Text("Versión 10.5.2", color="#BDBDBD"),
+                    ft.Text("Versión 10.9", color="#BDBDBD"),
                     ft.Container(height=20),
                     ft.Text("Desarrollado para:", color="#9E9E9E"),
                     ft.Text("GEOGRAFICA S.A. DE C.V.", size=25, weight="bold", color="white"),
@@ -70,7 +70,7 @@ def build_welcome_view(page: ft.Page, on_new_project, on_open_project):
     # Contenedor central
     welcome_container = ft.Container(
         content=ft.Column([
-            TerminalHeader(version="10.5.2"),
+            TerminalHeader(version="10.9"),
             ft.Container(height=25),
             
             # Logotipo con Easter Egg

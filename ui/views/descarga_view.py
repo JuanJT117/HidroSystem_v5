@@ -10,25 +10,28 @@ from core import descarga_logic
 def build_descarga_view(page: ft.Page):
     
     # --- 1. VARIABLES DE SESIÓN (Protegidas) ---
-    if not page.session.get("ruta_descargas_base"):
-        # Por defecto, guarda en una carpeta junto al archivo de proyecto activo
-        proj_path = page.session.get("current_project_path")
-        default_dir = os.path.dirname(proj_path) if proj_path else os.getcwd()
-        page.session.set("ruta_descargas_base", os.path.join(default_dir, "Descargas_Tlaloc"))
-    
     modo_actual = ft.Text("POR ESTADO", color="#00ff41", weight="bold", size=16)
     elementos_seleccionados = [] 
     poligonos_cargados = [] 
     estados_auditados = {}
     
+    ruta_bd_activa = page.session.get("ruta_bd_activa")
+    indice_activo = page.session.get("indice_bd_local")
+    
     # --- 2. CONTROLES DE UI Y TERMINAL ---
     terminal_list = ft.ListView(expand=True, spacing=5, auto_scroll=True)
     progreso_bar = ft.ProgressBar(width=None, color="#00ff41", bgcolor="#1a1a1a", value=0, visible=False)
-    ruta_destino_lbl = ft.Text(f"DESTINO: {page.session.get('ruta_descargas_base')}", color="grey", size=10, selectable=True)
+    
+    lbl_bd_activa = ft.Text(f"BD: {ruta_bd_activa if ruta_bd_activa else 'NINGUNA (Requiere Vinculación)'}", color="#00ff41" if ruta_bd_activa else "grey", size=10, selectable=True)
+    lbl_indice_status = ft.Text(f"Índice HDS: {'Activo en memoria' if indice_activo is not None else 'Vacío'}", color="#00ff41" if indice_activo is not None else "red", size=10)
 
     def log_terminal(mensaje):
         def _update():
             terminal_list.controls.append(ft.Text(mensaje, color="#00ff41", font_family="Roboto Mono", size=12))
+            # --- PROTECCIÓN OOM: Buffer Cíclico ---
+            # Mantenemos el árbol de renderizado ligero eliminando registros viejos
+            if len(terminal_list.controls) > 150:
+                terminal_list.controls.pop(0)
             page.update()
         page.run_thread(_update)
 
@@ -37,80 +40,124 @@ def build_descarga_view(page: ft.Page):
             progreso_bar.value = valor
             page.update()
         page.run_thread(_update)
-
-    def on_dialog_result(e: ft.FilePickerResultEvent):
-        if e.path:
-            page.session.set("ruta_descargas_base", e.path)
-            ruta_destino_lbl.value = f"DESTINO: {e.path}"
-            log_terminal(f"> DIRECTORIO FIJADO: {e.path}")
-            page.update()
     
     def saltar_a_imputacion(e):
         nav_func = page.session.get("navigate_to_module")
-        if nav_func:
-            nav_func(1)
+        if nav_func: nav_func(1)
 
-    dir_picker = ft.FilePicker(on_result=on_dialog_result)
-    page.overlay.append(dir_picker)
+    # --- NUEVOS CONTROLADORES DE ARCHIVO (In-Memory) ---
+    def on_vincular_bd_result(e: ft.FilePickerResultEvent):
+        if e.files:
+            ruta = e.files[0].path
+            page.session.set("ruta_bd_activa", ruta)
+            lbl_bd_activa.value = f"BD: {os.path.basename(ruta)}"
+            lbl_bd_activa.color = "#00ff41"
+            log_terminal(f"> 📦 VINCULANDO BASE DE DATOS: {ruta}")
+            
+            bloquear_interfaz(True)
+            progreso_bar.visible = True; progreso_bar.value = 0
+            
+            def _task():
+                try:
+                    descarga_logic.señal_abortar.clear()
+                    cuencas = descarga_logic.cargar_poligonos("POR CUENCA")
+                    log_terminal("> Escaneando compresión LZMA y reconstruyendo Índice HDS (8 Columnas)...")
+                    df_indice = descarga_logic.indexar_base_datos_tar(ruta, cuencas, log_terminal, update_progreso)
+                    
+                    if df_indice is not None and not df_indice.empty:
+                        page.session.set("indice_bd_local", df_indice) # PERSISTENCIA HDS
+                        def _success():
+                            lbl_indice_status.value = f"Índice HDS: Activo ({len(df_indice)} est.)"
+                            lbl_indice_status.color = "#00ff41"
+                            log_terminal("> ✅ Índice reconstruido e inyectado en la memoria del proyecto.")
+                            page.update()
+                        page.run_thread(_success)
+                    else: log_terminal("> ❌ Error: No se pudo generar el índice.")
+                except Exception as ex: log_terminal(f"> ❌ Error: {ex}")
+                finally:
+                    def _finalize():
+                        bloquear_interfaz(False)
+                        btn_detener.visible = False
+                        page.update()
+                    page.run_thread(_finalize)
+            threading.Thread(target=_task, daemon=True).start()
+
+    def on_exportar_csv_result(e: ft.FilePickerResultEvent):
+        if e.path:
+            df = page.session.get("indice_bd_local")
+            if df is not None:
+                df.to_csv(e.path, index=False, encoding='utf-8')
+                log_terminal(f"> ✅ Índice exportado a CSV en: {e.path}")
+            else: log_terminal("> [ERROR] No hay índice en memoria.")
+
+    def on_guardar_bd_masiva(e: ft.FilePickerResultEvent):
+        if e.path: run_extraction_thread(ruta_target=e.path)
+
+    picker_vincular_bd = ft.FilePicker(on_result=on_vincular_bd_result)
+    picker_exportar_csv = ft.FilePicker(on_result=on_exportar_csv_result)
+    picker_guardar_bd = ft.FilePicker(on_result=on_guardar_bd_masiva)
+    page.overlay.extend([picker_vincular_bd, picker_exportar_csv, picker_guardar_bd])
 
     # --- 3. BOTONES DE CONTROL ---
     btn_modo_estado = ft.TextButton("🗺️ POR ESTADO", on_click=lambda e: cambiar_modo(e, "POR ESTADO"), style=ft.ButtonStyle(color="#00ff41"))
     btn_modo_cuenca = ft.TextButton("🌊 POR CUENCA", on_click=lambda e: cambiar_modo(e, "POR CUENCA"), style=ft.ButtonStyle(color="#00ff41"))
     btn_modo_masivo = ft.TextButton("📦 RESPALDO MASIVO", on_click=lambda e: cambiar_modo(e, "RESPALDO MASIVO"), style=ft.ButtonStyle(color="#1c75fa"))
-    # --- NUEVO: BOTÓN DE AUDITORÍA ---
-    # --- NUEVO: MOTOR DE AUDITORÍA DEEP SCAN ---
+    
+    # --- MOTOR DE AUDITORÍA Y PICKERS ---
     def procesar_auditoria_hilo(ruta_salida):
-        bloquear_interfaz(True) # Congelar UI globalmente
-        progreso_bar.visible = True
-        progreso_bar.value = 0
-        btn_detener.visible = True
-        btn_iniciar.visible = False
-        
+        ruta_bd = page.session.get("ruta_bd_activa")
+        if not ruta_bd:
+            log_terminal("> [ERROR] Vincula una BD (.tar.xz) primero.")
+            return
+        # (El resto de la lógica de auditoría se mantiene igual...)
+        bloquear_interfaz(True)
+        progreso_bar.visible = True; progreso_bar.value = 0
+        btn_detener.visible, btn_iniciar.visible = True, False
         def task():
             try:
-                ruta_base = page.session.get("ruta_descargas_base")
-                exito, msj = descarga_logic.auditar_base_datos_profunda(
-                    ruta_base, ruta_salida, log_terminal, update_progreso
-                )
+                # Recibimos el diccionario de estadísticas del Core
+                exito, msj, stats_audit = descarga_logic.auditar_base_datos_profunda(ruta_bd, ruta_salida, log_terminal, update_progreso)
                 
                 def final():
                     bloquear_interfaz(False)
-                    btn_detener.visible = False
-                    btn_iniciar.visible = True
-                    color_sb = "#00ff41" if exito else "red"
-                    page.snack_bar = ft.SnackBar(ft.Text(msj, weight="bold", color="black"), bgcolor=color_sb, open=True)
+                    btn_detener.visible, btn_iniciar.visible = False, True
+                    
+                    # --- CONEXIÓN DE ESTADO AL MAPA ---
+                    if exito and stats_audit:
+                        estados_auditados.clear()
+                        for k, v in stats_audit.items():
+                            estados_auditados[k] = v["sanas"] > 0
+                        dibujar_mapa() # Redibujamos el mapa para que pinte la auditoría real
+                    
+                    page.snack_bar = ft.SnackBar(ft.Text(msj, weight="bold", color="black"), bgcolor="#00ff41" if exito else "red", open=True)
                     log_terminal(f"> {msj}")
                     page.update()
                 page.run_thread(final)
-                
-            except Exception as e:
-                log_terminal(f"> [CRÍTICO] Fallo en el hilo de auditoría: {e}")
-                
+            except Exception as e: log_terminal(f"> [CRÍTICO] Fallo de auditoría: {e}")
         threading.Thread(target=task, daemon=True).start()
 
     def on_audit_dir_result(e: ft.FilePickerResultEvent):
         if e.path:
-            log_terminal(f"> ---------------------------------")
-            log_terminal(f"> 🔎 DESTINO DE AUDITORÍA FIJADO: {e.path}")
             modo_actual.value = "AUDITORÍA PROFUNDA"
-            elementos_seleccionados.clear()
-            dibujar_mapa()
+            elementos_seleccionados.clear(); dibujar_mapa()
             procesar_auditoria_hilo(e.path)
 
     picker_auditoria = ft.FilePicker(on_result=on_audit_dir_result)
     page.overlay.append(picker_auditoria)
 
-    btn_auditar = ft.TextButton("✅ AUDITAR BD LOCAL", 
-                                on_click=lambda _: picker_auditoria.get_directory_path(dialog_title="Selecciona dónde guardar el Informe LaTeX"), 
-                                style=ft.ButtonStyle(color="#ff9900"))
-    btn_cambiar_dir = ft.OutlinedButton("CAMBIAR CARPETA", icon=ft.Icons.FOLDER, on_click=lambda _: dir_picker.get_directory_path(), style=ft.ButtonStyle(color="white"))
+    btn_auditar = ft.TextButton("✅ AUDITAR BD LOCAL", on_click=lambda _: picker_auditoria.get_directory_path(dialog_title="Guardar Informe"), style=ft.ButtonStyle(color="#ff9900"))
+    btn_vincular_bd = ft.OutlinedButton("VINCULAR BD (.xz)", icon=ft.Icons.LINK, on_click=lambda _: picker_vincular_bd.pick_files(allowed_extensions=["xz"]), style=ft.ButtonStyle(color="white"))
+    btn_exportar_csv = ft.OutlinedButton("EXPORTAR ÍNDICE (CSV)", icon=ft.Icons.TABLE_CHART, on_click=lambda _: picker_exportar_csv.save_file(file_name="Indice_Tlaloc.csv", allowed_extensions=["csv"]), style=ft.ButtonStyle(color="white"))
     
-    btn_iniciar = ft.ElevatedButton("INICIAR EXTRACCIÓN", color="#050505", bgcolor="#00ff41", icon=ft.Icons.CLOUD_DOWNLOAD, on_click=lambda e: run_extraction_thread())
-    btn_detener = ft.ElevatedButton("DETENER", color="white", bgcolor="#cc0000", icon=ft.Icons.STOP, visible=False, on_click=lambda e: detener_proceso(e))
-    
-    # Puente desactivado internamente, el usuario usa el NavigationRail de main.py
-    btn_puente = ft.ElevatedButton("IR A IMPUTACIÓN", color="white", bgcolor="#1c75fa", icon=ft.Icons.ARROW_FORWARD, visible=False, on_click=saltar_a_imputacion)
+    def on_iniciar_click(e):
+        if modo_actual.value == "RESPALDO MASIVO": picker_guardar_bd.save_file(file_name="Tlaloc_BD_Nacional_Comprimida.tar.xz", allowed_extensions=["xz"])
+        else:
+            if not page.session.get("ruta_bd_activa"): log_terminal("> [ERROR] Debes VINCULAR una BD (.tar.xz) primero."); return
+            run_extraction_thread(ruta_target=page.session.get("ruta_bd_activa"))
 
+    btn_iniciar = ft.ElevatedButton("INICIAR EXTRACCIÓN", color="#050505", bgcolor="#00ff41", icon=ft.Icons.CLOUD_DOWNLOAD, on_click=on_iniciar_click)
+    btn_detener = ft.ElevatedButton("DETENER", color="white", bgcolor="#cc0000", icon=ft.Icons.STOP, visible=False, on_click=lambda e: detener_proceso(e))
+    btn_puente = ft.ElevatedButton("IR A IMPUTACIÓN", color="white", bgcolor="#1c75fa", icon=ft.Icons.ARROW_FORWARD, visible=False, on_click=saltar_a_imputacion)
     # Botón de Inspección
     btn_inspeccionar = ft.ElevatedButton("🔍 INSPECCIONAR ZONA", color="white", bgcolor="#9900ff", visible=True, on_click=lambda e: abrir_visor_flotante())
 
@@ -123,9 +170,9 @@ def build_descarga_view(page: ft.Page):
             log_terminal("> [ERROR] Selecciona al menos una zona en el mapa (clic) para inspeccionarla.")
             return
             
-        # RESOLUCIÓN SEGURA DE RUTA (Usando el BASE_DIR de la lógica)
-        ruta_csv = os.path.join(descarga_logic.BASE_DIR, "assets", "catalogo_tlaloc.csv")
-        estaciones = descarga_logic.obtener_catalogo_visor(modo_actual.value, elementos_seleccionados, ruta_csv)
+        # El catálogo se extrae directamente de la memoria RAM (Persistencia HDS)
+        df_cat = page.session.get("indice_bd_local")
+        estaciones = descarga_logic.obtener_catalogo_visor(modo_actual.value, elementos_seleccionados, df_cat)
         
         if not estaciones:
             log_terminal("> [ERROR] No hay estaciones locales para la zona. Realiza el Respaldo Masivo primero.")
@@ -149,7 +196,8 @@ def build_descarga_view(page: ft.Page):
             txt_local.value, txt_server.value, txt_status.value, txt_status.color = "Consultando local...", "Conectando Servidor...", "ANALIZANDO...", "white"
             page.update()
             
-            ruta_tar = os.path.join(page.session.get("ruta_descargas_base"), "Tlaloc_BD_Nacional_Comprimida.tar.xz")
+            # Leemos la ruta vinculada, independientemente de la carpeta donde se encuentre
+            ruta_tar = page.session.get("ruta_bd_activa")
             local_data, server_data = descarga_logic.inspeccionar_estacion_aislada(clave_sel, est_sel['estado_origen'], ruta_tar)
             
             txt_local.value, txt_server.value = "\n".join(local_data), "\n".join(server_data)
@@ -187,7 +235,16 @@ def build_descarga_view(page: ft.Page):
         btn_modo_estado.disabled = bloquear
         btn_modo_cuenca.disabled = bloquear
         btn_modo_masivo.disabled = bloquear
-        btn_cambiar_dir.disabled = bloquear
+        
+        # NUEVOS BOTONES IN-MEMORY (Reemplazan a btn_cambiar_dir)
+        btn_vincular_bd.disabled = bloquear
+        btn_exportar_csv.disabled = bloquear
+        btn_auditar.disabled = bloquear
+        
+        # --- REGLA DE DOMINIO ZERO-TRUST ---
+        # Bloqueamos el botón de Auditoría para evitar I/O Race Conditions 
+        # (intentar leer con Deep Scan mientras el hilo de Descarga está escribiendo en el disco).
+        btn_auditar.disabled = bloquear
         
         # <-- NUEVO: Bloqueamos los botones flotantes de la vista
         btn_inspeccionar.disabled = bloquear 
@@ -217,8 +274,9 @@ def build_descarga_view(page: ft.Page):
 
     # --- 4. LIENZO ESPACIAL ---
     mapa_canvas = cv.Canvas(expand=True)
-    CANVAS_WIDTH = 800
-    CANVAS_HEIGHT = 450
+    
+    # NUEVO: Diccionario mutable para zoom dinámico y preservación estricta de coordenadas
+    map_dim = {"w": 800, "h": 450}
 
     def dibujar_mapa(porcentajes_estados=None):
         if porcentajes_estados is None: porcentajes_estados = {}
@@ -231,22 +289,22 @@ def build_descarga_view(page: ft.Page):
                 poligonos_cargados = descarga_logic.cargar_poligonos(tipo_geometria)
 
             b = descarga_logic.BBOX_MEXICO
-            scale_x, scale_y = CANVAS_WIDTH / (b["max_x"] - b["min_x"]), CANVAS_HEIGHT / (b["max_y"] - b["min_y"])
+            # Aplicación de la matriz dinámica a escala
+            scale_x, scale_y = map_dim["w"] / (b["max_x"] - b["min_x"]), map_dim["h"] / (b["max_y"] - b["min_y"])
 
             for pol in poligonos_cargados:
                 geo = pol["geometria"]
                 nombre_poligono = pol["nombre"]
                 
                 if modo_actual.value == "RESPALDO MASIVO":
-                    clave_corta = descarga_logic.CATALOGO_ESTADOS_CONAGUA.get(nombre_poligono, "").upper()
+                    clave_corta = descarga_logic.obtener_clave_estado(nombre_poligono).upper()
                     pct_avance = porcentajes_estados.get(clave_corta, 0.0)
                     alfa_hex = f"{int(pct_avance * 153):02x}"
                     color_fill, color_stroke = (f"#{alfa_hex}00ff41" if pct_avance > 0 else "#000000"), ("#00ff41" if pct_avance >= 1.0 else "#004411")
                 
-                elif modo_actual.value == "AUDITORÍA":
-                    clave_corta = descarga_logic.CATALOGO_ESTADOS_CONAGUA.get(nombre_poligono, "").upper()
+                elif modo_actual.value in ["AUDITORÍA", "AUDITORÍA PROFUNDA"]:
+                    clave_corta = descarga_logic.obtener_clave_estado(nombre_poligono).upper()
                     tiene_datos = estados_auditados.get(clave_corta, False)
-                    # Verde semitransparente si tiene datos, Rojo semitransparente si está vacío
                     color_fill = "#6600ff41" if tiene_datos else "#66ff0000"
                     color_stroke = "#00ff41" if tiene_datos else "#ff0000"
                 
@@ -274,7 +332,8 @@ def build_descarga_view(page: ft.Page):
     def on_mapa_click(e):
         if modo_actual.value in ["RESPALDO MASIVO", "AUDITORÍA"] or btn_detener.visible: return
         b = descarga_logic.BBOX_MEXICO
-        scale_x, scale_y = CANVAS_WIDTH / (b["max_x"] - b["min_x"]), CANVAS_HEIGHT / (b["max_y"] - b["min_y"])
+        # Aplicación de matriz inversa para la detección geoespacial estricta
+        scale_x, scale_y = map_dim["w"] / (b["max_x"] - b["min_x"]), map_dim["h"] / (b["max_y"] - b["min_y"])
         lon_clic, lat_clic = (e.local_x / scale_x) + b["min_x"], b["max_y"] - (e.local_y / scale_y)
         pol_detectado = descarga_logic.detectar_clic_poligono(poligonos_cargados, lon_clic, lat_clic)
         
@@ -288,7 +347,43 @@ def build_descarga_view(page: ft.Page):
                 log_terminal(f"> [+] Seleccionado: {nombre}")
             dibujar_mapa()
 
-    contenedor_mapa = ft.GestureDetector(on_tap_down=on_mapa_click, content=ft.Container(content=mapa_canvas, bgcolor="#0a0a0a", width=CANVAS_WIDTH, height=CANVAS_HEIGHT, border=ft.border.all(1, "#00ff41"), border_radius=5))
+    # Contenedor dinámico (inyecta dict en tiempo de renderizado)
+    contenedor_mapa = ft.GestureDetector(on_tap_down=on_mapa_click, content=ft.Container(content=mapa_canvas, bgcolor="#0a0a0a", width=map_dim["w"], height=map_dim["h"], border=ft.border.all(1, "#00ff41"), border_radius=5))
+
+    # --- NUEVO: MOTOR DE ZOOM (FIT-TO-SCREEN) ---
+    def ajustar_zoom_mapa(e=None):
+        if not contenedor_mapa.page: return # Prevención si la vista no está activa
+        try:
+            pw = page.width if page.width else 1200
+            ph = page.height if page.height else 1000
+            
+            # Cálculo de márgenes dinámicos respetando los Flexboxes (expand=5 vs expand=3)
+            espacio_w = max(400, pw - 320) # 250px panel izq + paddings
+            espacio_h = max(250, (ph - 150) * 0.6) # Aproximadamente el 60% para el lienzo
+            
+            b = descarga_logic.BBOX_MEXICO
+            aspect_ratio = (b["max_x"] - b["min_x"]) / (b["max_y"] - b["min_y"])
+            
+            # Restricción 'Fit to Contain' pura
+            calc_h = espacio_w / aspect_ratio
+            if calc_h > espacio_h:
+                calc_h = espacio_h
+                calc_w = calc_h * aspect_ratio
+            else:
+                calc_w = espacio_w
+                
+            map_dim["w"] = calc_w
+            map_dim["h"] = calc_h
+            contenedor_mapa.content.width = map_dim["w"]
+            contenedor_mapa.content.height = map_dim["h"]
+            
+            if poligonos_cargados:
+                dibujar_mapa()
+        except Exception:
+            pass
+
+    # Suscripción segura al loop de eventos del Sistema Operativo (On Resize)
+    page.on_resized = ajustar_zoom_mapa
 
     def cambiar_modo(e, nuevo_modo):
         modo_actual.value = nuevo_modo; elementos_seleccionados.clear(); poligonos_cargados.clear()
@@ -302,40 +397,47 @@ def build_descarga_view(page: ft.Page):
         descarga_logic.señal_abortar.set()
         page.update()
 
-    def run_extraction_thread():
+    def run_extraction_thread(ruta_target):
         if not elementos_seleccionados and modo_actual.value != "RESPALDO MASIVO":
             log_terminal("> [ERROR] SELECCIONE AL MENOS UNA ZONA."); return
             
-        # 1. Preparar Barra visual
         progreso_bar.visible = True
         progreso_bar.value = 0 
-        
-        # 2. Bloquear toda la app (esto ya maneja btn_iniciar y btn_detener)
         bloquear_interfaz(True)
         
         def task():
             try:
-                # Extraemos de forma segura la ubicación activa del proyecto para enviarla como semilla
                 ruta_activa_sesion = page.session.get("imput_folder_path")
+                df_cat = page.session.get("indice_bd_local")
                 
-                ruta_final = descarga_logic.procesar_descarga(
-                    modo_actual.value, elementos_seleccionados, page.session.get("ruta_descargas_base"), 
+                ruta_final, df_generado = descarga_logic.procesar_descarga(
+                    modo_actual.value, elementos_seleccionados, ruta_target, df_cat,
                     log_terminal, update_progreso, callback_mapa=dibujar_mapa,
-                    carpeta_previa=ruta_activa_sesion # Enlazamos el historial cargado en RAM/Temp
+                    carpeta_previa=ruta_activa_sesion 
                 )
             except Exception as ex:
-                log_terminal(f"> [CRÍTICO] Error en hilo: {ex}")
+                log_terminal(f"> [CRÍTICO] Error en hilo principal: {ex}")
+                ruta_final, df_generado = None, None
             finally:
                 def _finalize():
                     btn_detener.visible, btn_iniciar.visible = False, True
                     bloquear_interfaz(False)
-                    if ruta_final and not descarga_logic.señal_abortar.is_set():
-                        page.session.set("imput_folder_path", ruta_final) # Se enlaza automático al Módulo 2
+                    if not descarga_logic.señal_abortar.is_set():
                         
-                        # --- NUEVO PAYLOAD: ORDEN DE EMPAQUETADO AL CERRAR ---
-                        page.session.set("txt_backup", {"__type__": "folder_backup", "path": ruta_final})
+                        # Inyectar Automáticamente en Memoria si fue Respaldo Masivo
+                        if modo_actual.value == "RESPALDO MASIVO" and df_generado is not None:
+                            page.session.set("ruta_bd_activa", ruta_target)
+                            page.session.set("indice_bd_local", df_generado)
+                            lbl_bd_activa.value = f"BD: {os.path.basename(ruta_target)}"
+                            lbl_bd_activa.color = "#00ff41"
+                            lbl_indice_status.value = f"Índice HDS: Activo ({len(df_generado)} est.)"
+                            lbl_indice_status.color = "#00ff41"
                         
-                        btn_puente.visible = True
+                        # Habilitar paso a Imputación si fue extracción de datos (Local)
+                        if ruta_final and modo_actual.value != "RESPALDO MASIVO":
+                            page.session.set("imput_folder_path", ruta_final) 
+                            page.session.set("txt_backup", {"__type__": "folder_backup", "path": ruta_final})
+                            btn_puente.visible = True
                     page.update()
                 page.run_thread(_finalize)
             
@@ -344,6 +446,7 @@ def build_descarga_view(page: ft.Page):
     # --- 7. CARGA INICIAL ASÍNCRONA ---
     async def render_mapa_inicial():
         await asyncio.sleep(0.5)
+        ajustar_zoom_mapa() # Detonamos el Zoom Dinámico al inicio para que nazca ajustado a la ventana
         dibujar_mapa()
     page.run_task(render_mapa_inicial)
 
@@ -357,8 +460,9 @@ def build_descarga_view(page: ft.Page):
                     ft.Text("MÉTODO DE SELECCIÓN", color="white", size=10, weight="bold"),
                     btn_modo_estado, btn_modo_cuenca, btn_modo_masivo,btn_auditar,
                     ft.Divider(color="#222222"),
-                    ft.Text("DIRECTORIO DE SALIDA", color="white", size=10, weight="bold"),
-                    ruta_destino_lbl, btn_cambiar_dir,
+                    ft.Text("BASE DE DATOS MAESTRA", color="white", size=10, weight="bold"),
+                    lbl_bd_activa, lbl_indice_status,
+                    btn_vincular_bd, btn_exportar_csv,
                 ], spacing=15, scroll=ft.ScrollMode.AUTO),
                 width=250, padding=20, border=ft.border.only(right=ft.border.BorderSide(1, "#222222"))
             ),
