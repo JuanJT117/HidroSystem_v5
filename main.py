@@ -2,6 +2,12 @@
 ##############################################################################################################
 #
 #   HyDaS/
+import logging
+
+# Evitar doble inicialización del logger
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.DEBUG)
+##
 #   ├── main.py                     # Punto de entrada estricto (App Shell)
 #   ├── core/                       # BACKEND: Lógica pura, matemáticas y algoritmos
 #   │   ├── __init__.py
@@ -23,7 +29,6 @@
 #   │   ├── __init__.py    
 #   │   └── project_manager.py      # NUEVO: Motor de base de datos comprimida (.hds via .xz)
 #   └── assets/                     # Recursos estáticos
-#       ├── catalogo_tlaloc.csv
 #       ├── cuencas.cpg
 #       ├── cuencas.dbf
 #       ├── cuencas.prj
@@ -38,7 +43,6 @@
 #       ├── estados.shp
 #       ├── estados.shx
 #       ├── tlaloc_egg.gif
-#       ├── Tlaloc_BD_Nacional_Comprimida.tar.xz
 #       ├── icon.ico
 #       └── path19.jpg
 #
@@ -47,10 +51,21 @@
 
 import flet as ft
 import os
+import sys
 import traceback
 
+# --- FIX PARA PROJ EN ENTORNOS CONDA (Evita ERROR 1: PROJ: Cannot find proj.db) ---
+_proj_win = os.path.join(sys.prefix, "Library", "share", "proj")
+_proj_unix = os.path.join(sys.prefix, "share", "proj")
+if os.path.exists(os.path.join(_proj_win, "proj.db")):
+    os.environ["PROJ_LIB"] = _proj_win
+    os.environ["PROJ_DATA"] = _proj_win
+elif os.path.exists(os.path.join(_proj_unix, "proj.db")):
+    os.environ["PROJ_LIB"] = _proj_unix
+    os.environ["PROJ_DATA"] = _proj_unix
+
 # --- IMPORTACIÓN DE INFRAESTRUCTURA Y COMPONENTES ---
-from infrastructure.project_manager import ProjectManager
+from infrastructure.project_manager import project_manager_instance
 from ui.components import COLOR_FONDO, COLOR_ACENTO, COLOR_SUPERFICIE, FUENTE_PRINCIPAL, add_opacity
 import threading
 import time
@@ -62,12 +77,15 @@ from ui.views.welcome_view import build_welcome_view
 from ui.views.descarga_view import build_descarga_view
 import ui.views.imputacion_view as imputacion_app
 import ui.views.analisis_view as analisis_app
+# --- NUEVA INYECCIÓN: Módulo ARF ---
+from ui.views.arf_view import build_arf_view
 import ui.views.gastos_view as gastos_app
 from ui.views.climatologia_view import build_climatologia_view
+from ui.views.topologia_view import build_topologia_view
 
 def main(page: ft.Page):
     # --- CONFIGURACIÓN DE PÁGINA ---
-    page.title = "HyDaS v10.9"
+    page.title = "HyDaS v11"
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = COLOR_FONDO
     page.window_width = 1200
@@ -110,7 +128,6 @@ def main(page: ft.Page):
     page.session.set("current_project_path", None)
 
     # --- CONTENEDOR PRINCIPAL (ROUTER) ---
-    main_container = ft.Container(expand=True)
 
     # ==========================================
     # --- SISTEMA GLOBAL DE PROTECCIÓN DE NAVEGACIÓN (ANTI-CRASH) ---
@@ -143,25 +160,6 @@ def main(page: ft.Page):
     # --- LISTA GLOBAL DE BOTONES PARA BLOQUEO ---
     # Esta lista guardará las referencias a los botones de Matrix que queremos controlar
     menu_buttons = [] 
-
-    # --- DEFINICIÓN DE UTILIDADES DE BLOQUEO ---
-    def lock_ui():
-        """Desactiva la interacción de todos los botones registrados."""
-        for btn in menu_buttons:
-            try:
-                btn.toggle_lock(True)
-            except:
-                pass
-        page.update()
-
-    def unlock_ui():
-        """Reactiva la interacción de todos los botones registrados."""
-        for btn in menu_buttons:
-            try:
-                btn.toggle_lock(False)
-            except:
-                pass
-        page.update()
     
     # --- LÓGICA DE NAVEGACIÓN Y CARGA ---
     
@@ -178,11 +176,7 @@ def main(page: ft.Page):
                 if main_rail.trailing:
                     for ctrl in main_rail.trailing.controls:
                         ctrl.disabled = False
-            # 1. Liberamos el bloqueo de botones global si existe
-            try: unlock_ui() 
-            except: pass
-            
-            # 2. Limpiamos la ruta del proyecto
+            # 1. Limpiamos la ruta del proyecto
             page.session.set("current_project_path", None)
             
             # 3. Limpiamos la pantalla
@@ -193,7 +187,7 @@ def main(page: ft.Page):
             page.add(
                 build_welcome_view(
                     page, 
-                    on_new_project=lambda _: file_picker_save.save_file(file_name="ProyectoNuevo.hds"),
+                    on_new_project=lambda _: file_picker_save.save_file(file_name="ProyectoNuevo.hds", allowed_extensions=["hds"]),
                     on_open_project=lambda _: file_picker_open.pick_files(allowed_extensions=["hds"])
                 )
             )
@@ -201,6 +195,8 @@ def main(page: ft.Page):
         def prompt_exit_dialog(e):
             def exit_without_saving(_):
                 page.close(exit_dialog)
+                # --- CIERRE SEGURO ---
+                project_manager_instance.close_project()
                 return_to_welcome_screen()
 
             def save_and_exit(_):
@@ -252,7 +248,7 @@ def main(page: ft.Page):
                                 session_dict[k] = val
                             
                             # Validamos el resultado booleano aplicando Manejo Defensivo
-                            exito = ProjectManager.save_project(path, session_dict)
+                            exito = project_manager_instance.save_project(path, session_dict)
                             
                             # --- LIMPIEZA EXTREMA RAM EXPLICITA ---
                             del session_dict
@@ -266,6 +262,7 @@ def main(page: ft.Page):
                         
                         # --- LIMPIEZA FINAL SESION ---
                         page.session.clear()
+                        project_manager_instance.close_project()
                         gc.collect()
                         
                         # Retorno a pantalla inicial de forma segura
@@ -330,8 +327,10 @@ def main(page: ft.Page):
                 ft.NavigationRailDestination(icon=ft.Icons.CLOUD_DOWNLOAD, label="1. EXTRACCIÓN"),
                 ft.NavigationRailDestination(icon=ft.Icons.MEMORY, label="2. IMPUTACIÓN"),
                 ft.NavigationRailDestination(icon=ft.Icons.SHOW_CHART, label="3. ANÁLISIS"),
-                ft.NavigationRailDestination(icon=ft.Icons.CALCULATE, label="4. GASTOS"),
-                ft.NavigationRailDestination(icon=ft.Icons.THERMOSTAT_OUTLINED, selected_icon=ft.Icons.THERMOSTAT, label="5. CLIMATOLOGÍA"),
+                ft.NavigationRailDestination(icon=ft.Icons.MAP, label="4. ARF"), # <--- NUEVO MÓDULO INYECTADO
+                ft.NavigationRailDestination(icon=ft.Icons.CALCULATE, label="5. GASTOS"),
+                ft.NavigationRailDestination(icon=ft.Icons.THERMOSTAT_OUTLINED, selected_icon=ft.Icons.THERMOSTAT, label="6. CLIMATOLOGÍA"),
+                ft.NavigationRailDestination(icon=ft.Icons.MAP_OUTLINED, selected_icon=ft.Icons.MAP, label="7. GIS / MODELO FÍSICO"),
             ],
             on_change=lambda e: change_module(e.control.selected_index),
             trailing=ft.Column([
@@ -379,9 +378,13 @@ def main(page: ft.Page):
                     elif index == 2:
                         nueva_vista = analisis_app.build_analisis_view(page)
                     elif index == 3:
-                        nueva_vista = gastos_app.build_gastos_view(page)
-                    elif index == 4: 
-                        nueva_vista = build_climatologia_view(page)
+                        nueva_vista = build_arf_view(page) 
+                    elif index == 4:
+                        nueva_vista = gastos_app.build_gastos_view(page) 
+                    elif index == 5: 
+                        nueva_vista = build_climatologia_view(page) 
+                    elif index == 6:
+                        nueva_vista = build_topologia_view(page)
                     else:
                         nueva_vista = ft.Container()
                         
@@ -415,8 +418,6 @@ def main(page: ft.Page):
                 content_area
             ], expand=True)
         )
-
-    # --- HANDLERS DE PROYECTO ---
 
     # --- HANDLERS DE PROYECTO ---
 
@@ -473,7 +474,7 @@ def main(page: ft.Page):
                     _log(f"Iniciando apertura segura del archivo: {os.path.basename(path)}")
                     
                     # Llamamos al motor con los callbacks inyectados
-                    data = ProjectManager.load_project(path, progress_callback=_prog, log_callback=_log)
+                    data = project_manager_instance.load_project(path, progress_callback=_prog, log_callback=_log)
                     
                     _log("Realizando purga de memoria antigua...")
                     page.session.clear() 
@@ -528,10 +529,12 @@ def main(page: ft.Page):
 
     def handle_new_project(e: ft.FilePickerResultEvent):
         if e.path:
+            # Forzar la extensión .hds si el usuario la omitió en el cuadro de diálogo
+            path = e.path if e.path.endswith(".hds") else e.path + ".hds"
             try:
                 # Crear un archivo inicial vacío pero con la estructura .hds (.tar.xz)
-                ProjectManager.save_project(e.path, {"status": "new_project"})
-                page.session.set("current_project_path", e.path)
+                project_manager_instance.save_project(path, {"status": "new_project"})
+                page.session.set("current_project_path", path)
                 show_dashboard()
             except Exception as ex:
                 page.snack_bar = ft.SnackBar(ft.Text(f"Error al crear: {str(ex)}"), bgcolor="red")
@@ -586,7 +589,7 @@ def main(page: ft.Page):
                     session_dict[k] = val
                         
                 # Volcado a disco duro (.hds) con validación estricta
-                exito = ProjectManager.save_project(path, session_dict)
+                exito = project_manager_instance.save_project(path, session_dict)
                 
                 # --- LIMPIEZA EXTREMA RAM EXPLICITA ---
                 del session_dict
@@ -643,7 +646,7 @@ def main(page: ft.Page):
     page.add(
         build_welcome_view(
             page, 
-            on_new_project=lambda _: file_picker_save.save_file(file_name="ProyectoNuevo.hds"),
+            on_new_project=lambda _: file_picker_save.save_file(file_name="ProyectoNuevo.hds", allowed_extensions=["hds"]),
             on_open_project=lambda _: file_picker_open.pick_files(allowed_extensions=["hds"])
         )
     )

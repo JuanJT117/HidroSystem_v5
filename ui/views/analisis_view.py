@@ -12,7 +12,7 @@ from core import analisis_cuenca
 # Píxel transparente
 TRANSPARENT_PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 
-def build_analisis_view(page: ft.Page, on_back_to_menu=None):
+def build_analisis_view(page: ft.Page):
     
     # --- 1. INICIALIZACIÓN DE SESIÓN (Protegida) ---
     keys_temp = [
@@ -135,28 +135,38 @@ def build_analisis_view(page: ft.Page, on_back_to_menu=None):
             rehidratar_interfaz() 
             page.snack_bar = ft.SnackBar(ft.Text(f"✅ {sid}: Análisis recuperado desde disco/memoria."), bgcolor="green", open=True)
         else:
-            # --- CARGA DE DATOS CRUDOS (Nuevo Análisis) ---
-            db_crudas = page.session.get("db_series_crudas") or {}
-            df_estacion_data = db_crudas[sid]["df"]
-            if isinstance(df_estacion_data, dict) and df_estacion_data.get("type") == "df":
-                df_estacion = pd.read_parquet(df_estacion_data["path"])
-            else:
-                df_estacion = df_estacion_data
-            for k in keys_data + keys_temp: page.session.set(k, None)
+            # --- CARGA DE DATOS CRUDOS DESDE SQLITE ---
+            ruta_bd = page.session.get("ruta_bd_activa")
+            df_procesado = None
+            if ruta_bd:
+                if ruta_bd.endswith('.tar.xz') or ruta_bd.endswith('.xz'):
+                    ruta_hds = ruta_bd.replace('.tar.xz', '.gpkg').replace('.xz', '.gpkg')
+                elif not ruta_bd.endswith('.gpkg') and not ruta_bd.endswith('.sqlite'):
+                    ruta_hds = ruta_bd + "_ARF.gpkg"
+                else:
+                    ruta_hds = ruta_bd
+                    
+                import sqlite3
+                conn = sqlite3.connect(ruta_hds)
+                try:
+                    query = f"SELECT * FROM serie_imputada_{sid}"
+                    df_estacion = pd.read_sql_query(query, conn, parse_dates=['FECHA'])
+                    if not df_estacion.empty:
+                        df_estacion.set_index('FECHA', inplace=True)
+                        mapa_nombres = {}
+                        if 'PRECIP' in df_estacion.columns: mapa_nombres['PRECIP'] = 'PRECIP_imputado'
+                        if 'PRECIP_ORIGINAL' in df_estacion.columns: mapa_nombres['PRECIP_ORIGINAL'] = 'PRECIP_original'
+                        df_estacion.rename(columns=mapa_nombres, inplace=True)
+                        if 'PRECIP_original' not in df_estacion.columns and 'PRECIP_imputado' in df_estacion.columns:
+                            df_estacion['PRECIP_original'] = df_estacion['PRECIP_imputado']
+                        df_estacion.drop(columns=[c for c in ['lat', 'lon', 'station_id'] if c in df_estacion.columns], inplace=True)
+                        df_procesado = df_estacion
+                except Exception as e:
+                    print(f"Error cargando estación {sid} desde SQLite: {e}")
+                finally:
+                    conn.close()
             
-            # --- NUEVO PUENTE DE COMPATIBILIDAD ---
-            # Guardamos un CSV temporal para que 'Analisis.procesar_datos' lo formatee exactamente
-            # como lo necesita 'Analisis.filtrar_datos' (con índices de tiempo correctos).
-            import tempfile
-            try:
-                with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w", encoding="utf-8-sig") as tmp:
-                    df_estacion.to_csv(tmp.name, index=False) 
-                    tmp_path = tmp.name
-                df_procesado = Analisis.procesar_datos(tmp_path)
-                os.remove(tmp_path)
-            except Exception as ex:
-                df_procesado = df_estacion # Fallback si hay error
-            # ---------------------------------------
+            for k in keys_data + keys_temp: page.session.set(k, None)
 
             page.session.set("df_procesado", df_procesado)
             page.session.set("target_station_id", sid)
@@ -187,7 +197,7 @@ def build_analisis_view(page: ft.Page, on_back_to_menu=None):
     data_table_raw = ft.Column(expand=True, controls=[ft.Text("Esperando filtros...")])
     data_table_stats = ft.Column(expand=True, controls=[ft.Text("Calculando...")])
     
-    def safe_img(session_key, h=400):
+    def safe_img(session_key):
         val = page.session.get(session_key)
         src = val if (val and len(val) > 100) else TRANSPARENT_PIXEL
         return ft.Container(content=ft.Image(src_base64=src, fit=ft.ImageFit.CONTAIN), expand=True)

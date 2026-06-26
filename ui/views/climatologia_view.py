@@ -8,7 +8,7 @@ import uuid
 # --- ARQUITECTURA HEXAGONAL: Importación desde el Core ---
 from core import climatologia_logic
 
-def build_climatologia_view(page: ft.Page, on_back_to_menu=None):
+def build_climatologia_view(page: ft.Page):
     
     # --- 1. INICIALIZACIÓN DE LA BASE DE DATOS DE PERSISTENCIA (Aislada) ---
     if not page.session.get("db_climatologia_procesada"):

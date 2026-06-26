@@ -18,9 +18,9 @@ Instrucciones para la creación del ejecutable .exe de HyDaS en Anaconda
 4- Ejecutar el siguiente código:
 
 
-flet pack main.py --name "HyDaS_v10.9" --add-data "assets;assets" --hidden-import "pandas" --hidden-import "numpy" --hidden-import "scipy" --hidden-import "scipy.interpolate" --hidden-import "scipy.stats" --hidden-import "statsmodels" --hidden-import "sklearn" --hidden-import "pmdarima" --hidden-import "matplotlib" --hidden-import "matplotlib.backends.backend_agg" --hidden-import "matplotlib.pyplot" --hidden-import "seaborn" --hidden-import "folium" --hidden-import "geopy" --hidden-import "shapefile" --hidden-import "shapely" --hidden-import "tabulate" --hidden-import "requests" --hidden-import "urllib3" --hidden-import "jinja2" --hidden-import "openpyxl" --hidden-import "pyarrow" --hidden-import "fpdf" --icon "assets/icon.ico"
+flet pack main.py --name "HyDaS_v11" --add-data "assets;assets" --hidden-import "pandas" --hidden-import "numpy" --hidden-import "scipy" --hidden-import "scipy.interpolate" --hidden-import "scipy.stats" --hidden-import "statsmodels" --hidden-import "sklearn" --hidden-import "pmdarima" --hidden-import "matplotlib" --hidden-import "matplotlib.backends.backend_agg" --hidden-import "matplotlib.pyplot" --hidden-import "seaborn" --hidden-import "folium" --hidden-import "geopy" --hidden-import "shapefile" --hidden-import "shapely" --hidden-import "tabulate" --hidden-import "requests" --hidden-import "urllib3" --hidden-import "jinja2" --hidden-import "openpyxl" --hidden-import "pyarrow" --hidden-import "fpdf" --icon "assets/icon.ico"
 
-NOTA: este código es funcional únicamente para la Versión "HidroSistem_v10.9" 
+NOTA: este código es funcional únicamente para la Versión "HyDaS_v11" 
 
 5- En la capeta creada después de la ejecución del código  llamada "dist" se encontrara el archivo .exe del programa
 

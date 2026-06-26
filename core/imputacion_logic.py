@@ -10,6 +10,9 @@ import warnings
 import shapefile # <--- REQUISITO: pip install pyshp
 import threading
 import datetime
+import geopandas as gpd
+from shapely.geometry import Point, MultiPoint
+from shapely.ops import voronoi_diagram
 
 # Ignorar advertencias de modelos para limpieza de consola
 warnings.filterwarnings("ignore")
@@ -81,48 +84,51 @@ def generar_mapa_html(station_files, output_dir="."):
 # 2. UTILERÍAS GIS (SHAPEFILE)
 #-------------------------------------------------------------------------------------------------------------------------------------------------------
 
-def exportar_shapefile(data_list, output_path):
+def generar_poligonos_thiessen(station_files, output_path):
     """
-    Genera un Shapefile de puntos (SHP, SHX, DBF, PRJ).
-    data_list: Lista de diccionarios con claves standarizadas.
+    Genera un Shapefile de Polígonos de Thiessen (Voronoi) a partir de las estaciones detectadas.
     """
     try:
-        # Aseguramos que la extensión sea correcta para el 'base name'
+        points = []
+        ids = []
+        for sid, info in station_files.items():
+            if info.get('lon') is not None and info.get('lat') is not None:
+                points.append(Point(info['lon'], info['lat']))
+                ids.append(sid)
+                
+        if len(points) < 3:
+            raise ValueError("Se requieren al menos 3 estaciones para triangular polígonos de Thiessen.")
+            
+        mp = MultiPoint(points)
+        regions = voronoi_diagram(mp)
+        
+        polygons = []
+        station_ids = []
+        
+        # Mapeo espacial exacto: buscar el punto generador más cercano al centroide de cada polígono
+        for poly in regions.geoms:
+            poly_center = poly.centroid
+            # Encontrar el punto más cercano (que debe ser el generador del diagrama)
+            min_dist = float('inf')
+            closest_id = None
+            for pt, sid in zip(points, ids):
+                d = pt.distance(poly_center)
+                if d < min_dist:
+                    min_dist = d
+                    closest_id = sid
+            
+            polygons.append(poly)
+            station_ids.append(closest_id)
+            
+        gdf = gpd.GeoDataFrame({'ID_EST': station_ids}, geometry=polygons, crs="EPSG:4326")
+        
         base_path = os.path.splitext(output_path)[0]
-        
-        # 1. Crear el escritor de Shapefile (Tipo PUNTO)
-        w = shapefile.Writer(base_path, shapefile.POINT)
-        
-        # 2. Definir campos de la tabla de atributos (DBF)
-        w.field('ID_EST', 'C', size=50)      # Caracter
-        w.field('ALTITUD', 'N', decimal=2)   # Numérico
-        w.field('DIST_KM', 'N', decimal=2)   # Numérico (Distancia al objetivo)
-        w.field('ROL', 'C', size=20)         # Objetivo o Vecina
-        
-        # 3. Poblar geometría y atributos
-        for row in data_list:
-            # Geometría: Longitud (X), Latitud (Y)
-            w.point(row['LONGITUD'], row['LATITUD'])
-            
-            # Atributos (Deben coincidir con los campos definidos arriba)
-            # Manejo seguro de campos opcionales
-            dist = row.get('DISTANCIA_KM', 0.0)
-            rol = row.get('ROL', 'ESTACION')
-            
-            w.record(row['ID'], row['ALTITUD'], dist, rol)
-            
-        w.close()
-        
-        # 4. Crear archivo de proyección (.prj) WGS84
-        # Esto permite que QGIS reconozca las coordenadas lat/lon automáticamente
-        wgs84_wkt = 'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.017453292519943295]]'
-        with open(f"{base_path}.prj", "w") as f:
-            f.write(wgs84_wkt)
-            
+        gdf.to_file(f"{base_path}.shp", driver="ESRI Shapefile", encoding='utf-8')
         return f"{base_path}.shp"
         
     except Exception as e:
-        print(f"Error generando SHP: {e}")
+        print(f"Error generando Thiessen: {e}")
+        import traceback
         traceback.print_exc()
         raise e
 
@@ -157,17 +163,54 @@ def parse_station_data(file_path):
         return pd.DataFrame(columns=['FECHA', 'PRECIP'])
 
 def obtener_rango_global_fechas(station_files):
+    if not station_files: return None
+    
     fechas_min = []
     fechas_max = []
     
+    # Optimización Crítica: Escaneo secuencial sin instanciar DataFrames (Evita colapso OOM)
     for info in station_files.values():
-        df = parse_station_data(info['path'])
-        if not df.empty:
-            fechas_min.append(df.index.min())
-            fechas_max.append(df.index.max())
+        try:
+            with open(info['path'], 'r', encoding='utf-8', errors='ignore') as f:
+                parsing = False
+                local_min = "9999-99-99"
+                local_max = "0000-00-00"
+                found = False
+                for line in f:
+                    if not parsing:
+                        if 'FECHA' in line and 'PRECIP' in line: 
+                            parsing = True
+                        continue
+                    
+                    line_strip = line.strip()
+                    if not line_strip: continue
+                    
+                    parts = line_strip.split()
+                    if len(parts) >= 1:
+                        d = parts[0]
+                        # Validación robusta de formato YYYY-MM-DD
+                        if len(d) == 10 and d[4] == '-' and d[7] == '-':
+                            if d < local_min: local_min = d
+                            if d > local_max: local_max = d
+                            found = True
+                
+                if found:
+                    fechas_min.append(local_min)
+                    fechas_max.append(local_max)
+        except Exception:
+            pass
             
     if not fechas_min: return None
-    return pd.date_range(min(fechas_min), max(fechas_max), freq='D')
+    
+    todas_min = pd.to_datetime(fechas_min, format='%Y-%m-%d', errors='coerce')
+    todas_max = pd.to_datetime(fechas_max, format='%Y-%m-%d', errors='coerce')
+    
+    real_min = todas_min.min()
+    real_max = todas_max.max()
+    
+    if pd.isna(real_min) or pd.isna(real_max): return None
+    
+    return pd.date_range(real_min, real_max, freq='D')
 
 #-------------------------------------------------------------------------------------------------------------------------------------------------------
 # 4. UTILERÍAS DE CÁLCULO
@@ -207,7 +250,7 @@ def _filtrar_ruido_intermedio(df_target, df_neighbors, original_mask):
 # 5. NÚCLEO DE IMPUTACIÓN
 #-------------------------------------------------------------------------------------------------------------------------------------------------------
 
-def impute_target_station(target_id, station_files, page, pb, pbl, radius_km, log_callback=None):
+def impute_target_station(target_id, station_files, radius_km, global_range, progress_callback=None, log_callback=None):
     log = []
     
     # Envoltorio EAFP para logs en tiempo real y memoria
@@ -215,17 +258,17 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km, lo
         log.append(msg)
         if log_callback: 
             log_callback(msg)
+            
+    def _prog(pct, msg):
+        if progress_callback:
+            progress_callback(pct, msg)
 
     señal_abortar_imputacion.clear() # <-- Limpiar señal al iniciar
     try:
-        pbl.value = "Calculando rango de fechas global..."; page.update()
-        global_range = obtener_rango_global_fechas(station_files)
-        if global_range is None: return None, "Error: No se pudieron determinar fechas."
-        log.append(f"Rango Global: {global_range.min().date()} a {global_range.max().date()}")
-        log.append(f"Radio de Búsqueda seleccionado: {radius_km} km")
+        _log(f"Radio de Búsqueda seleccionado: {radius_km} km")
 
         info_target = station_files[target_id]
-        pbl.value = f"Cargando objetivo: {target_id}..."; page.update()
+        _prog(None, f"Cargando objetivo: {target_id}...")
         
         df_target = parse_station_data(info_target['path'])
         df_target = df_target.reindex(global_range)
@@ -235,9 +278,9 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km, lo
         original_data_mask = df_target['PRECIP'].notna()
         
         initial_nans = df_target['PRECIP'].isna().sum()
-        log.append(f"Huecos totales a rellenar: {initial_nans}")
+        _log(f"Huecos totales a rellenar: {initial_nans}")
 
-        pbl.value = f"Cargando vecinos (Radio {radius_km}km)..."; page.update()
+        _prog(None, f"Cargando vecinos (Radio {radius_km}km)...")
         
         lat_t, lon_t = info_target['lat'], info_target['lon']
         neighbors_all = []
@@ -260,60 +303,59 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km, lo
                         'weight': 1/(dist**2 if dist>0 else 0.001)
                     })
 
-        log.append(f"Vecinos detectados (<{radius_km}km): {len(neighbors_all)}")
+        _log(f"Vecinos detectados (<{radius_km}km): {len(neighbors_all)}")
         
         if len(neighbors_all) < 30:
-            log.append("\n⚠️ ALERTA: Menos de 30 vecinos detectados en este radio.")
-            log.append("   -> Se recomienda descartar este resultado y AUMENTAR EL RADIO de búsqueda para mejorar la precisión matemática.\n")
+            _log("\n⚠️ ALERTA: Menos de 30 vecinos detectados en este radio.")
+            _log("   -> Se recomienda descartar este resultado y AUMENTAR EL RADIO de búsqueda para mejorar la precisión matemática.\n")
         
         if neighbors_all:
             df_neighbors = pd.concat([n['data'] for n in neighbors_all], axis=1)
         else:
             df_neighbors = pd.DataFrame(index=global_range)
 
-        pb.value = 0.2; page.update()
+        _prog(0.2, None)
 
-        # FASE 1: IDW
+        # FASE 1: IDW (VECTORIZADO)
         missing_indices = df_target[df_target['PRECIP'].isna()].index
         
         if not df_neighbors.empty and len(missing_indices) > 0:
-            pbl.value = "Fase 1: IDW (Req. >= 5 vecinos)..."
-            page.update()
-            count_idw = 0
-            skipped_idw = 0
+            _prog(None, "Fase 1: IDW (Req. >= 5 vecinos)...")
             
-            for date in missing_indices:
-                if señal_abortar_imputacion.is_set():# <-- Freno de emergencia en IDW
-                    return None, "🛑 PROCESO ABORTADO DURANTE FASE IDW."
-                
-                row_vals = df_neighbors.loc[date]
-                valid_neighbors_for_date = row_vals.count()
-                
-                if valid_neighbors_for_date < 5:
-                    skipped_idw += 1
-                    continue 
-                
-                num, den = 0, 0
-                for nb in neighbors_all:
-                    val = row_vals[nb['col_name']]
-                    if pd.notna(val):
-                        num += val * nb['weight']
-                        den += nb['weight']
-                
-                if den > 0:
-                    df_target.at[date, 'PRECIP'] = round(num / den, 2)
-                    count_idw += 1
+            if señal_abortar_imputacion.is_set(): return None, "🛑 PROCESO ABORTADO DURANTE FASE IDW."
             
-            log.append(f"Rellenados IDW: {count_idw} (Omitidos: {skipped_idw})")
+            # --- Vectorización de cruce espacial ---
+            df_missing_neighbors = df_neighbors.loc[missing_indices]
+            weights = np.array([nb['weight'] for nb in neighbors_all])
+            
+            data_mat = df_missing_neighbors.values
+            valid_mask = ~np.isnan(data_mat)
+            valid_counts = valid_mask.sum(axis=1)
+            
+            to_impute_mask = valid_counts >= 5
+            
+            data_mat_zeroed = np.nan_to_num(data_mat, 0)
+            weights_mat = np.tile(weights, (len(missing_indices), 1))
+            weights_valid = weights_mat * valid_mask
+            
+            num = (data_mat_zeroed * weights_valid).sum(axis=1)
+            den = weights_valid.sum(axis=1)
+            
+            safe_den = np.where(den > 0, den, 1)
+            idw_result = np.round(num / safe_den, 2)
+            
+            imputed_dates = missing_indices[to_impute_mask]
+            df_target.loc[imputed_dates, 'PRECIP'] = idw_result[to_impute_mask]
+            
+            count_idw = to_impute_mask.sum()
+            skipped_idw = (~to_impute_mask).sum()
+            
+            _log(f"Rellenados IDW: {count_idw} (Omitidos: {skipped_idw})")
             
             df_target, rm = _filtrar_ruido_intermedio(df_target, df_neighbors, original_data_mask)
-            if rm > 0: log.append(f"-> Filtro IDW: Se eliminaron {rm} datos ruidosos.")
+            if rm > 0: _log(f"-> Filtro IDW: Se eliminaron {rm} datos ruidosos.")
 
-        pb.value = 0.4; page.update()
-
-        # SELECCIÓN DE "ÉLITES"
-        pbl.value = "Seleccionando estaciones Élite..."
-        page.update()
+        _prog(0.4, "Seleccionando estaciones Élite...")
         
         elite_neighbors = []
         
@@ -326,7 +368,7 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km, lo
                     elite_neighbors.append(nb)
             
             if not elite_neighbors:
-                log.append("⚠️ Relajando criterio a r>0.4...")
+                _log("⚠️ Relajando criterio a r>0.4...")
                 for nb in neighbors_all:
                     r_val = correlations.get(nb['col_name'], 0)
                     if nb['dist'] <= radius_km and r_val >= 0.4:
@@ -336,16 +378,15 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km, lo
             elite_neighbors.sort(key=lambda x: x['corr'], reverse=True)
             
         elite_cols = [n['col_name'] for n in elite_neighbors]
-        log.append(f"Estaciones Élite finales: {len(elite_neighbors)}")
+        _log(f"Estaciones Élite finales: {len(elite_neighbors)}")
 
-        # FASE 2: MLR
+        # FASE 2: MLR (SEMI-VECTORIZADO)
         missing_indices = df_target[df_target['PRECIP'].isna()].index
         
         if len(missing_indices) > 0 and len(elite_neighbors) > 0:
-            pbl.value = "Fase 2: MLR..."
-            page.update()
+            _prog(None, "Fase 2: MLR...")
             
-            if señal_abortar_imputacion.is_set(): return None, "🛑 PROCESO ABORTADO ANTES DE MLR." # <-- Freno antes de entrenar el modelo
+            if señal_abortar_imputacion.is_set(): return None, "🛑 PROCESO ABORTADO ANTES DE MLR."
             
             df_train = df_neighbors[elite_cols].copy()
             df_train['TARGET'] = df_target['PRECIP']
@@ -359,40 +400,39 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km, lo
                     model = LinearRegression().fit(X, y)
                     count_mlr = 0
                     
-                    for date in missing_indices:
-                        
-                        if señal_abortar_imputacion.is_set(): return None, "🛑 PROCESO ABORTADO DURANTE PREDICCIÓN MLR." # <--  Freno de emergencia en MLR
-                        
+                    # Filtramos fechas válidas antes de iterar para no usar loc miles de veces
+                    df_missing_elite = df_neighbors.loc[missing_indices, elite_cols]
+                    valid_counts = df_missing_elite.count(axis=1)
+                    valid_dates = df_missing_elite[valid_counts >= 5].index
+                    
+                    for date in valid_dates:
+                        if señal_abortar_imputacion.is_set(): return None, "🛑 PROCESO ABORTADO DURANTE PREDICCIÓN MLR."
                         if count_mlr >= 7: break
-                        row_elite = df_neighbors.loc[date, elite_cols]
-                        if row_elite.count() < 5: continue
                         
-                        X_input = row_elite.fillna(0).to_frame().T 
+                        X_input = df_missing_elite.loc[[date]].fillna(0)
                         pred = max(model.predict(X_input)[0], 0)
-                        
                         df_target.at[date, 'PRECIP'] = round(pred, 2)
                         count_mlr += 1
                         
-                    log.append(f"Rellenados MLR: {count_mlr}")
+                    _log(f"Rellenados MLR: {count_mlr}")
                     df_target, rm = _filtrar_ruido_intermedio(df_target, df_neighbors, original_data_mask)
-                    if rm > 0: log.append(f"-> Filtro MLR: {rm} eliminados.")
+                    if rm > 0: _log(f"-> Filtro MLR: {rm} eliminados.")
                     
                 except Exception as ex:
-                    log.append(f"Fallo en MLR: {ex}")
+                    _log(f"Fallo en MLR: {ex}")
             else:
-                log.append(f"MLR omitido: Insuficientes datos ({len(df_train)}).")
+                _log(f"MLR omitido: Insuficientes datos ({len(df_train)}).")
 
-        pb.value = 0.7; page.update()
+        _prog(0.7, None)
 
         # FASE 3: SARIMAX
         missing_indices = df_target[df_target['PRECIP'].isna()].index
         
         if len(missing_indices) > 0:
             
-            if señal_abortar_imputacion.is_set(): return None, "🛑 PROCESO ABORTADO ANTES DE SARIMAX." # <-- Freno antes de SARIMAX (que es el más pesado)
+            if señal_abortar_imputacion.is_set(): return None, "🛑 PROCESO ABORTADO ANTES DE SARIMAX."
             
-            pbl.value = "Fase 3: SARIMAX/Interpolación..."
-            page.update()
+            _prog(None, "Fase 3: SARIMAX/Interpolación...")
             
             try:
                 exog_data = None
@@ -401,7 +441,7 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km, lo
                 
                 y_train_temp = df_target['PRECIP'].interpolate(method='linear', limit_direction='both').fillna(0)
                 
-                if len(missing_indices) < 50500:
+                if len(missing_indices) < 2000000:
                     model = pm.auto_arima(
                         y_train_temp, X=exog_data,
                         start_p=1, start_q=1, max_p=2, max_q=2,
@@ -416,35 +456,33 @@ def impute_target_station(target_id, station_files, page, pb, pbl, radius_km, lo
                         val = fitted_vals.loc[date]
                         df_target.at[date, 'PRECIP'] = round(max(val, 0), 2)
                     
-                    log.append(f"Rellenados SARIMAX: {len(missing_indices)}")
+                    _log(f"Rellenados SARIMAX: {len(missing_indices)}")
                 else:
                     raise Exception(f"Demasiados huecos ({len(missing_indices)}).")
                     
             except Exception as ex_arima:
-                log.append(f"Fallback a Interpolación.")
+                _log(f"Fallback a Interpolación.")
                 before_int = df_target['PRECIP'].isna().sum()
                 df_target['PRECIP'] = df_target['PRECIP'].interpolate(method='time', limit_direction='both')
                 filled_int = before_int - df_target['PRECIP'].isna().sum()
-                log.append(f"Rellenados Interpolación: {filled_int}")
+                _log(f"Rellenados Interpolación: {filled_int}")
 
         df_target['PRECIP'] = df_target['PRECIP'].round(2)
         final_nans = df_target['PRECIP'].isna().sum()
         
         if final_nans > 0:
-            log.append(f"⚠️ Quedaron {final_nans} datos vacíos.")
+            _log(f"⚠️ Quedaron {final_nans} datos vacíos.")
         else:
-            log.append("✅ Serie completada.")
+            _log("✅ Serie completada.")
 
-        pbl.value = "Consolidando..."
-        page.update()
+        _prog(None, "Consolidando...")
         
         df_final = df_target.join(df_neighbors, how='left')
         cols_base = ['PRECIP', 'PRECIP_ORIGINAL']
         cols_final = cols_base + elite_cols + [c for c in df_final.columns if c not in cols_base and c not in elite_cols]
         df_final = df_final[cols_final]
         
-        pb.value = 1.0; pbl.value = "Finalizado."
-        page.update()
+        _prog(1.0, "Finalizado.")
         return df_final.reset_index(), "\n".join(log)
 
     except Exception as e:
@@ -478,3 +516,45 @@ def save_imputation_log(log_text, target_id, output_folder):
     except Exception as e:
         print(f"Error al guardar el log QA: {e}")
         return None
+
+def guardar_en_sqlite_hds(df: pd.DataFrame, target_id: str, ruta_base: str) -> bool:
+    """
+    Guarda el DataFrame imputado directamente en el GeoPackage (.gpkg / .hds).
+    Realiza un Upsert (Borra la estación si ya existe y la reescribe) para evitar duplicados.
+    """
+    if df is None or df.empty or not ruta_base: return False
+    
+    try:
+        # 1. Derivar la ruta exacta del GeoPackage
+        if ruta_base.endswith('.tar.xz') or ruta_base.endswith('.xz'):
+            ruta_hds = ruta_base.replace('.tar.xz', '.gpkg').replace('.xz', '.gpkg')
+        elif not ruta_base.endswith('.gpkg') and not ruta_base.endswith('.sqlite'):
+            ruta_hds = ruta_base + "_ARF.gpkg"
+        else:
+            ruta_hds = ruta_base
+
+        # 2. Preparar el DataFrame
+        df_sql = df.copy()
+        if df_sql.index.name == 'FECHA':
+            df_sql.reset_index(inplace=True)
+        
+        df_sql['clave_estacion'] = str(target_id)
+        
+        # 3. Conexión y Upsert (Protegido por WAL para Multihilo)
+        import sqlite3
+        conn = sqlite3.connect(ruta_hds)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        
+        # Guardamos la estación en su propia tabla para evitar colisiones de esquema (vecinos distintos)
+        nombre_tabla = f"serie_imputada_{target_id}"
+        df_sql.to_sql(nombre_tabla, conn, if_exists='replace', index=False)
+        
+        conn.commit()
+        conn.close()
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"⚠️ Error guardando {target_id} en SQLite: {e}")
+        import traceback; traceback.print_exc()
+        return False

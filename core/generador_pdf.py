@@ -20,7 +20,7 @@ class DQA_Dashboard(FPDF):
         
         self.set_font('helvetica', 'B', 16)
         self.set_text_color(0, 255, 65) # Verde Cyberpunk para el título
-        self.cell(0, 10, 'T L Á L O C   -   H I D R O S I S T E M', 0, 1, 'C')
+        self.cell(0, 10, 'T L Á L O C   -   H Y D A S', 0, 1, 'C')
         
         self.set_font('helvetica', 'I', 10)
         self.set_text_color(200, 200, 200)
@@ -32,7 +32,7 @@ class DQA_Dashboard(FPDF):
         self.set_font('helvetica', 'I', 8)
         self.set_text_color(128, 128, 128)
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        self.cell(0, 10, f'Reporte autogenerado por HidroSistem | Engine V10.9 | {timestamp} | Pág {self.page_no()}', 0, 0, 'C')
+        self.cell(0, 10, f'Reporte autogenerado por HyDaS | Engine V11 | {timestamp} | Pág {self.page_no()}', 0, 0, 'C')
 
     def draw_kpi_card(self, x, y, title, value, status_color):
         # Fondo de la tarjeta

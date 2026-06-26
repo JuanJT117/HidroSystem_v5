@@ -12,6 +12,9 @@ import os
 
 # --- ARQUITECTURA HEXAGONAL: Importación desde el Core ---
 from core import gastos_logic as gastos
+from infrastructure.project_manager import project_manager_instance
+from core.modelos_espaciales import SubcuencaSchema, UsoSueloSchema, CaucesSchema
+from core.analisis_espacial import MotorEspacial
 
 def build_gastos_view(page: ft.Page):
     
@@ -186,9 +189,19 @@ def build_gastos_view(page: ft.Page):
         ]
     )
 
-    # 3. Ensamblaje del nuevo Panel
+    # 3. Ensamblaje del nuevo Panel y Banner de Advertencia ARF
+    banner_alerta_arf = ft.Container(
+        content=ft.Row([
+            ft.Icon(ft.Icons.INFO_OUTLINE, color="orange"),
+            ft.Text("Análisis ACF Desactivado: El área de la cuenca es menor a 25 km². No se requiere reducción areal por normatividad de la OMM.", color="orange", weight="bold")
+        ]),
+        bgcolor="#331a00", padding=10, border=ft.border.all(1, "orange"), border_radius=8, margin=ft.margin.only(bottom=10),
+        visible=False # Se controla por la sesión en la rehidratación
+    )
+
     panel_parametros_avanzados = ft.Container(
         content=ft.Column([
+            banner_alerta_arf, # <--- BANNER INYECTADO
             ft.Text("Configuración del Modelo Hidrológico (Frontera y Cinemática)", weight="bold", color="#00ff41"),
             ft.Row([inp_tr_lista, dd_tormenta, dd_cinematica], wrap=True, spacing=15),
             ft.Row([inp_fcc, dd_amc, inp_qbase], wrap=True, spacing=15)
@@ -1051,14 +1064,18 @@ def build_gastos_view(page: ft.Page):
                 except Exception:
                     tr_cols_calc = ['2', '5', '10', '20', '50', '100']
 
-                # Ejecución de Core Lógico
+                # Extracción del parámetro ARF para enviarlo al backend
+                aplicar_reduccion_areal = page.session.get("arf_requerido") if page.session.get("arf_requerido") is not None else True
+
+                # Ejecución de Core Lógico (Preparado para la ETAPA A del backend)
                 res_r, res_c, res_h, df_vars, res_hydros, l = gastos.calcular_coeficientes_y_gastos(
                     df, page.session.get("df_cotas"), metodo_tc=rg_metodo_tc.value, 
                     modo_distribuido=(rg_modo_calculo.value == "dist"),
                     estaciones_db=page.session.get("estaciones_db"), pesos_estaciones=page.session.get("pesos_estaciones"),
                     df_int_global=page.session.get("df_intensidad"), df_alt_global=page.session.get("df_altura"),
                     fcc=v_fcc, condicion_amc=v_amc, flujo_base=v_qbase, lista_tr=tr_cols_calc,
-                    tipo_tormenta=v_tormenta, tipo_cinematica=v_cinematica
+                    tipo_tormenta=v_tormenta, tipo_cinematica=v_cinematica,
+                    aplicar_arf=aplicar_reduccion_areal # <--- PARÁMETRO DE PUENTE INYECTADO
                 )
                 
                 if res_r is not None:
@@ -1231,9 +1248,54 @@ def build_gastos_view(page: ft.Page):
 
     rg_modo_calculo.on_change = cambiar_modo_lluvia
 
+    # --- GENERADOR DE PLANTILLAS ESPACIALES ---
+    dlg_cargando_espacial = ft.AlertDialog(
+        modal=True,
+        content=ft.Container(
+            content=ft.Column([
+                ft.ProgressRing(color="#00ff41", stroke_width=5),
+                ft.Text("Generando Contratos Espaciales OGC...", weight="bold", color="#00ff41"),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True, spacing=15),
+            padding=20
+        )
+    )
+
+    def trigger_generar_plantillas(e):
+        def _task():
+            page.open(dlg_cargando_espacial)
+            page.update()
+            try:
+                # 1. Generar Plantillas Vacías
+                gdf_cuenca = MotorEspacial.generar_plantilla(SubcuencaSchema, "Polygon")
+                gdf_suelo = MotorEspacial.generar_plantilla(UsoSueloSchema, "Polygon")
+                gdf_cauces = MotorEspacial.generar_plantilla(CaucesSchema, "LineString")
+                
+                # 2. Inyectar al GeoPackage del Proyecto Activo
+                pm = project_manager_instance
+                pm.guardar_capa_espacial("shp_cuenca_limite", gdf_cuenca)
+                pm.guardar_capa_espacial("shp_uso_suelo", gdf_suelo)
+                pm.guardar_capa_espacial("shp_cauces", gdf_cauces)
+                
+                # Notificación Cyberpunk
+                page.snack_bar = ft.SnackBar(
+                    ft.Text("✅ Capas Base generadas en el archivo de proyecto. Listas para QGIS.", color="#050505", weight="bold"), 
+                    bgcolor="#00ff41", open=True
+                )
+            except Exception as ex:
+                page.snack_bar = ft.SnackBar(ft.Text(f"❌ Error Geoespacial: {str(ex)}"), bgcolor="#cc0000", open=True)
+            finally:
+                page.close(dlg_cargando_espacial)
+                page.update()
+                
+        # Asegúrate de ejecutar en un hilo separado
+        threading.Thread(target=_task, daemon=True).start()
+
+    btn_generar_plantillas = ft.ElevatedButton("Generar Plantillas GIS (.hds)", icon=ft.Icons.MAP, on_click=trigger_generar_plantillas, bgcolor="#1c75fa", color="white")
+
     # --- PESTAÑAS ---
     tab_area_cotas = ft.Tab(text="1. Geometría", icon=ft.Icons.LANDSCAPE, content=ft.Container(ft.Column([
         ft.Text("Paso 1: Parámetros Físicos", color="#00ff41", size=20, weight="bold"), validation_msg, ft.Divider(),
+        ft.Row([ft.Text("Integración QGIS: ", weight="bold", color="grey"), btn_generar_plantillas]),
         ft.Text("Áreas de Aportación", size=16, weight="bold"),
         ft.Row([ft.ElevatedButton("Importar CSV (Áreas)", icon=ft.Icons.UPLOAD_FILE, on_click=lambda _: pk_area.pick_files())]),
         ft.Row([inp_c_id, inp_c_area, ft.ElevatedButton("Agregar Cuenca", icon=ft.Icons.ADD, on_click=add_cuenca_manual, bgcolor="#00ff41", color="black")], alignment=ft.MainAxisAlignment.START),
@@ -1250,6 +1312,8 @@ def build_gastos_view(page: ft.Page):
         ft.Container(ft.Column([ft.Row([tabla_cuencas_suelos], scroll=ft.ScrollMode.AUTO)], scroll=ft.ScrollMode.AUTO), height=500, border=ft.border.all(1, "grey"))
     ]), padding=20))
     
+
+
     tab_data = ft.Tab(text="3. Entorno", icon=ft.Icons.WATER_DROP, content=ft.Container(ft.Column([
         ft.Text("Paso 3: Condiciones Ambientales y Tormentas", color="#00ff41", size=20, weight="bold"),
         ft.Row([
@@ -1388,9 +1452,15 @@ def build_gastos_view(page: ft.Page):
             # 2. Inyección Mágica: Traemos datos procesados del Módulo 3
             auto_cargar_thiessen()
             
-            # --- NUEVO: Actualizar Dropdown del Modo Simple ---
-            actualizar_dropdown_simple()
-            
+            # --- EVALUACIÓN FASE 7.1 (ESTADO ARF) ---
+            requiere_arf = page.session.get("arf_requerido")
+            if requiere_arf is False:
+                banner_alerta_arf.visible = True
+                dd_tormenta.tooltip = "El Factor de Reducción Areal (ARF) está apagado para esta cuenca."
+            else:
+                banner_alerta_arf.visible = False
+                dd_tormenta.tooltip = "SCS Tipo II/III buscan automáticamente la P24. (Se aplicará ARF Dinámico calculado en Módulo 4)."
+
             # 3. Restaurar UI
             render_manual_tables()
             validar_nombres_cuencas()
@@ -1410,8 +1480,13 @@ def build_gastos_view(page: ft.Page):
 
     page.run_task(delayed_restore)
     
-    # RETORNO CON EL GESTOR DE ESCENARIOS ENCABEZANDO
+    # RETORNO CON EL GESTOR DE ESCENARIOS ENCABEZANDO Y AJUSTE DE MÁRGENES
     return ft.Column([
         top_bar_escenarios,
-        ft.Container(content=main_tabs, expand=True, padding=10)
-    ], expand=True)
+        # POR QUÉ: Expandimos el padding derecho a 20 para empujar la barra contra el límite de la ventana y liberar el espacio de visualización de las tablas de gastos.
+        ft.Container(
+            content=main_tabs, 
+            expand=True, 
+            padding=ft.padding.only(left=10, right=20, top=10, bottom=10)
+        )
+    ], expand=True, horizontal_alignment=ft.CrossAxisAlignment.STRETCH) # <--- CORRECCIÓN DE MAR

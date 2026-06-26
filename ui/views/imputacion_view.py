@@ -4,7 +4,6 @@ import threading
 import webbrowser
 import asyncio
 import pandas as pd
-import folium
 import tempfile
 
 # --- ARQUITECTURA HEXAGONAL: Importación desde el Core ---
@@ -76,6 +75,8 @@ def build_imputacion_view(page: ft.Page):
     def log_radiactivo(msg):
         def _update():
             terminal_radiactiva.controls.append(ft.Text(f"> {msg}", color="#00f0ff", font_family="monospace", size=11))
+            if len(terminal_radiactiva.controls) > 50:
+                terminal_radiactiva.controls.pop(0)
             page.update()
         page.run_thread(_update)
 
@@ -116,6 +117,32 @@ def build_imputacion_view(page: ft.Page):
 
     picker_exportar_log = ft.FilePicker(on_result=manejar_exportacion_log)
     page.overlay.append(picker_exportar_log)
+    
+    # --- SISTEMA DE EXPORTACIÓN THIESSEN ---
+    def manejar_exportacion_thiessen(e: ft.FilePickerResultEvent):
+        if e.path:
+            station_files = page.session.get("imput_station_files")
+            if not station_files:
+                page.snack_bar = ft.SnackBar(ft.Text("❌ No hay estaciones en memoria para calcular Thiessen."), bgcolor="red", open=True)
+                page.update()
+                return
+            
+            try:
+                page.snack_bar = ft.SnackBar(ft.Text("⏳ Generando Polígonos de Thiessen..."), bgcolor="orange", open=True)
+                page.update()
+                
+                path_shp = imputacion_logic.generar_poligonos_thiessen(station_files, e.path)
+                if path_shp:
+                    page.session.set("thiessen_shp_path", path_shp)
+                    page.snack_bar = ft.SnackBar(ft.Text("✅ Polígonos de Thiessen exportados con éxito"), bgcolor="#00f0ff", open=True)
+                else:
+                    page.snack_bar = ft.SnackBar(ft.Text("❌ No se pudieron generar los polígonos."), bgcolor="red", open=True)
+            except Exception as ex:
+                page.snack_bar = ft.SnackBar(ft.Text(f"❌ Error al calcular Thiessen: {ex}"), bgcolor="red", open=True)
+            page.update()
+
+    picker_exportar_thiessen = ft.FilePicker(on_result=manejar_exportacion_thiessen)
+    page.overlay.append(picker_exportar_thiessen)
     # ------------------------------------------------
     
     # Controles de Texto y Estado
@@ -152,6 +179,12 @@ def build_imputacion_view(page: ft.Page):
             
             restore_station_ui(estaciones)
             open_map_button.disabled = False
+            export_thiessen_button.disabled = False
+            
+            area_c = page.session.get("area_cuenca_km2") or 0.0
+            impute_masiva_button.disabled = (area_c <= 25)
+            impute_masiva_button.tooltip = "Disponible solo para cuencas > 25 km²" if area_c <= 25 else "Procesa todas las estaciones por bloques"
+            
             page.snack_bar = ft.SnackBar(ft.Text(f"✅ {len(estaciones)} estaciones enlazadas desde la memoria del proyecto."), bgcolor="#00ff41", open=True)
         else:
             page.snack_bar = ft.SnackBar(ft.Text("⚠️ La carpeta detectada no contiene archivos .txt válidos"), bgcolor="orange", open=True)
@@ -218,10 +251,17 @@ def build_imputacion_view(page: ft.Page):
         visor_resultados_grid.controls.clear()
         db = page.session.get("db_series_crudas") or {}
         
-        def _trigger_download(sid, df_dict):
-            # Lee el Parquet desde el disco duro justo antes de exportarlo
+        def _trigger_download(sid):
             try:
-                df = pd.read_parquet(df_dict["path"]) if isinstance(df_dict, dict) else df_dict
+                import sqlite3
+                ruta_bd = page.session.get("ruta_bd_activa")
+                if not ruta_bd or not os.path.exists(ruta_bd):
+                    raise Exception("Base de datos no disponible")
+                    
+                conn = sqlite3.connect(ruta_bd)
+                df = pd.read_sql_query(f"SELECT * FROM serie_imputada_{sid}", conn)
+                conn.close()
+                
                 estacion_a_exportar[0] = df
                 picker_exportar_csv.save_file(
                     dialog_title=f"Exportar {sid} a CSV",
@@ -229,10 +269,18 @@ def build_imputacion_view(page: ft.Page):
                     allowed_extensions=["csv"]
                 )
             except Exception as e:
-                page.snack_bar = ft.SnackBar(ft.Text(f"Error al leer caché para exportar: {e}"), bgcolor="red", open=True)
+                page.snack_bar = ft.SnackBar(ft.Text(f"Error al exportar de BD: {e}"), bgcolor="red", open=True)
                 page.update()
 
-        def _trigger_download_log(sid, log_text):
+        def _trigger_download_log(sid, data_dict):
+            log_text = data_dict.get("log", "")
+            log_path_src = data_dict.get("log_path")
+            if log_path_src and os.path.exists(log_path_src):
+                try:
+                    with open(log_path_src, "r", encoding="utf-8") as f:
+                        log_text = f.read()
+                except Exception:
+                    pass
             log_a_exportar[0] = log_text
             picker_exportar_log.save_file(
                 dialog_title=f"Descargar Informe QA de {sid}",
@@ -241,8 +289,6 @@ def build_imputacion_view(page: ft.Page):
             )
 
         for sid, data in db.items():
-            df_info = data["df"]
-            log_info = data.get("log", "")
             visor_resultados_grid.controls.append(
                 ft.Container(
                     content=ft.Row([
@@ -251,9 +297,9 @@ def build_imputacion_view(page: ft.Page):
                         # Botón Inspeccionar
                         ft.IconButton(ft.Icons.REMOVE_RED_EYE, icon_color="white", icon_size=16, tooltip="Inspeccionar Datos", on_click=lambda e, s=sid: abrir_inspeccion(s)),
                         # Botón Exportar CSV
-                        ft.IconButton(ft.Icons.DOWNLOAD, icon_color="#00f0ff", icon_size=16, tooltip="Exportar a CSV", on_click=lambda e, s=sid, d=df_info: _trigger_download(s, d)),
+                        ft.IconButton(ft.Icons.DOWNLOAD, icon_color="#00f0ff", icon_size=16, tooltip="Exportar a CSV", on_click=lambda e, s=sid: _trigger_download(s)),
                         # Botón Exportar Informe QA (LOG)
-                        ft.IconButton(ft.Icons.RECEIPT_LONG, icon_color="orange", icon_size=16, tooltip="Descargar Informe QA", on_click=lambda e, s=sid, l=log_info: _trigger_download_log(s, l))
+                        ft.IconButton(ft.Icons.RECEIPT_LONG, icon_color="orange", icon_size=16, tooltip="Descargar Informe QA", on_click=lambda e, s=sid, d=data: _trigger_download_log(s, d))
                     ]),
                     bgcolor="#1e2a1e", padding=5, border_radius=8
                 )
@@ -263,20 +309,42 @@ def build_imputacion_view(page: ft.Page):
     def abrir_inspeccion(sid):
         data = page.session.get("db_series_crudas").get(sid)
         if not data: return
-        df_data = data["df"]
-        if isinstance(df_data, dict) and df_data.get("type") == "df":
-            df = pd.read_parquet(df_data["path"])
-        else:
-            df = df_data
+        # Leemos los últimos 5 registros directamente de SQLite (Protección OOM)
+        import sqlite3
+        ruta_bd = page.session.get("ruta_bd_activa")
+        df_tail = pd.DataFrame()
+        if ruta_bd and os.path.exists(ruta_bd):
+            try:
+                conn = sqlite3.connect(ruta_bd)
+                query = f"SELECT * FROM serie_imputada_{sid} ORDER BY FECHA DESC LIMIT 5"
+                df_tail = pd.read_sql_query(query, conn)
+                df_tail = df_tail.iloc[::-1] # Invertimos para que quede cronológico
+                conn.close()
+            except Exception:
+                pass
+                
+        if df_tail.empty:
+            df_tail = pd.DataFrame({"INFO": ["Datos no disponibles en BD"]})
+            
+        log_text = "Log no disponible."
+        if "log_path" in data and data["log_path"] and os.path.exists(data["log_path"]):
+            try:
+                with open(data["log_path"], "r", encoding="utf-8") as f:
+                    log_text = f.read()
+            except Exception:
+                pass
+        elif "log" in data:
+            log_text = data.get("log", "")
+            
         dialog = ft.AlertDialog(
             title=ft.Text(f"Inspección: {sid}", color=COLOR_ACENTO),
             content=ft.Column([
                 ft.Text("Muestra de datos (Últimos 5):", weight="bold"),
-                ft.Container(content=ft.Text(df.tail(5).to_string(), size=9, font_family="monospace"), bgcolor="black", padding=10),
+                ft.Container(content=ft.Text(df_tail.to_string(index=False), size=9, font_family="monospace"), bgcolor="black", padding=10),
                 ft.Divider(),
                 ft.Text("Log de Calidad:", weight="bold"),
                 # FIX: Se usa Column dentro de Container para habilitar el scroll
-                ft.Container(content=ft.Column([ft.Text(data["log"][:800] + "...", size=11, color="grey")], scroll=ft.ScrollMode.AUTO), height=150)
+                ft.Container(content=ft.Column([ft.Text(log_text[:800] + "...", size=11, color="grey")], scroll=ft.ScrollMode.AUTO), height=150)
             ], tight=True, width=500),
             # --- ADAPTACIÓN FLET 0.28+: Cierre seguro mediante método atómico de página ---
             actions=[ft.TextButton("Cerrar", on_click=lambda _: page.close(dialog))]
@@ -312,6 +380,27 @@ def build_imputacion_view(page: ft.Page):
             db_crudas = page.session.get("db_series_crudas") or {}
             out_folder = page.session.get("imput_output_folder") or os.getcwd()
             radius_km = int(dd_radio.value)
+            station_files = page.session.get("imput_station_files")
+
+            # --- PRECALCULAR RANGO GLOBAL UNA SOLA VEZ (ORQUESTADOR) ---
+            pbl.value = "Calculando rango de fechas global..."
+            page.update()
+            
+            try:
+                global_range = imputacion_logic.obtener_rango_global_fechas(station_files)
+                if global_range is None:
+                    raise Exception("No se pudieron determinar fechas globales de la base de datos.")
+                log_radiactivo(f"Rango Global: {global_range.min().date()} a {global_range.max().date()}")
+            except Exception as e:
+                log_radiactivo(f"❌ Error de inicio: {e}")
+                state["imputing"] = False
+                # Apagar Escudo Radiactivo prematuramente
+                bloqueo_radiactivo.visible = False
+                page.window.prevent_close = False
+                main_rail = page.session.get("main_rail")
+                if main_rail: main_rail.disabled = False
+                page.update()
+                return
 
             for idx, sid in enumerate(cola):
                 if not state["imputing"]: break
@@ -321,28 +410,46 @@ def build_imputacion_view(page: ft.Page):
                 log_radiactivo(f"--- INICIANDO ESTACIÓN {sid} ({idx+1}/{len(cola)}) ---")
 
                 try:
-                    # INYECCIÓN DEL INTERCEPTOR: Pasamos pb_interceptado en vez de pb
+                    # INYECCIÓN DEL CALLBACK PROTEGIDO Y RANGO GLOBAL (HEXAGONAL + EAFP)
+                    def ui_progress(pct, msg):
+                        def _upd():
+                            if pct is not None: pb_interceptado.value = pct
+                            if msg is not None: pbl.value = msg
+                            page.update()
+                        page.run_thread(_upd)
+
                     df_res, log_msg = imputacion_logic.impute_target_station(
-                        sid, page.session.get("imput_station_files"), page, pb_interceptado, pbl, radius_km, log_callback=log_radiactivo
+                        sid, station_files, radius_km, global_range, 
+                        progress_callback=ui_progress, log_callback=log_radiactivo
                     )
                     
                     if df_res is not None:
                         # Guardado Seguro en Parquet
-                        cache_dir = page.session.get("project_cache_dir")
-                        if not cache_dir:
-                            cache_dir = tempfile.mkdtemp(prefix="hidro_cache_")
-                            page.session.set("project_cache_dir", cache_dir)
+                        # --- NUEVO: PERSISTENCIA DIRECTA A BASE DE DATOS (.GPKG) ---
+                        # Eliminamos la generación en caliente de CSV y Parquet para maximizar rendimiento
+                        # El usuario exportará los CSV cuando los solicite desde el UI.
+                        ruta_bd = page.session.get("ruta_bd_activa")
+                        if ruta_bd:
+                            imputacion_logic.guardar_en_sqlite_hds(df_res, sid, ruta_bd)
+                            print(f"📦 Estación {sid} inyectada en SQLite con éxito.")
+                            
+                        # El LOG se mantiene como texto en memoria o se guarda si el usuario lo requiere
+                        log_path = None # Optimización de velocidad
                         
-                        df_safe = df_res.copy(deep=True)
-                        df_safe.columns = df_safe.columns.astype(str)
-                        df_path = os.path.join(cache_dir, f"imput_{sid}.parquet")
-                        df_safe.to_parquet(df_path)
+                        # Actualizar db_crudas para marcarla como imputada
+                        db_crudas[sid] = {"log_path": log_path, "imputada": True}
                         
-                        db_crudas[sid] = {"df": {"type": "df", "path": df_path}, "log": log_msg}
-                        imputacion_logic.save_target_csv(df_res, sid, out_folder)
                         log_radiactivo(f"✅ Estación {sid} procesada y guardada con éxito.")
+                        
+                        # LIMPIADO DE MEMORIA (Protección OOM)
+                        del df_res
+                        del log_msg
                 except Exception as ex:
                     log_radiactivo(f"❌ Error crítico en {sid}: {ex}")
+                
+                # RECOLECCIÓN DE BASURA OBLIGATORIA POR CICLO
+                import gc
+                gc.collect()
             
             # --- 2. FINALIZACIÓN Y APAGADO DEL ESCUDO ---
             def _finalize_batch():
@@ -363,6 +470,188 @@ def build_imputacion_view(page: ft.Page):
                 if main_rail: main_rail.disabled = False
                 
                 state["imputing"] = False
+                page.update()
+            page.run_thread(_finalize_batch)
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def on_click_impute_masiva(e):
+        station_files = page.session.get("imput_station_files")
+        if not station_files:
+            page.snack_bar = ft.SnackBar(ft.Text("❌ No hay estaciones cargadas"), bgcolor="red", open=True)
+            return
+
+        def task():
+            state["imputing"] = True
+            
+            def _start_visuals():
+                bloqueo_radiactivo.visible = True
+                terminal_radiactiva.controls.clear()
+                page.window.prevent_close = True
+                main_rail = page.session.get("main_rail")
+                if main_rail: main_rail.disabled = True
+                tabs.selected_index = 2
+                page.update()
+            page.run_thread(_start_visuals)
+            
+            db_crudas = page.session.get("db_series_crudas") or {}
+            out_folder = page.session.get("imput_output_folder") or os.getcwd()
+            radius_km = int(dd_radio.value)
+            
+            pbl.value = "Calculando rango de fechas global..."
+            page.update()
+            
+            try:
+                global_range = imputacion_logic.obtener_rango_global_fechas(station_files)
+                if global_range is None: raise Exception("Rango global no disponible.")
+            except Exception as e:
+                log_radiactivo(f"❌ Error de inicio masivo: {e}")
+                state["imputing"] = False
+                def _abort():
+                    bloqueo_radiactivo.visible = False
+                    page.window.prevent_close = False
+                    main_rail = page.session.get("main_rail")
+                    if main_rail: main_rail.disabled = False
+                    page.update()
+                page.run_thread(_abort)
+                return
+
+            todas_estaciones_bruto = list(station_files.keys())
+            todas_estaciones = []
+            
+            # FILTRO DE REANUDACIÓN: Omitir estaciones ya imputadas exitosamente
+            for s in todas_estaciones_bruto:
+                if s in db_crudas and db_crudas[s].get("imputada") is True:
+                    continue
+                todas_estaciones.append(s)
+                
+            if not todas_estaciones:
+                log_radiactivo("✅ Todas las estaciones de la cuenca ya han sido imputadas previamente. Nada que hacer.")
+                def _abort_success():
+                    page.snack_bar = ft.SnackBar(ft.Text("✅ Todas las estaciones ya estaban imputadas."), bgcolor="green", open=True)
+                    bloqueo_radiactivo.visible = False
+                    page.window.prevent_close = False
+                    main_rail = page.session.get("main_rail")
+                    if main_rail: main_rail.disabled = False
+                    state["imputing"] = False
+                    page.update()
+                page.run_thread(_abort_success)
+                return
+                
+            estaciones_omitidas = len(todas_estaciones_bruto) - len(todas_estaciones)
+            if estaciones_omitidas > 0:
+                log_radiactivo(f"♻️ Reanudación Inteligente: Se omitieron {estaciones_omitidas} estaciones ya procesadas.")
+            
+            chunk_size = 5
+            total_chunks = (len(todas_estaciones) + chunk_size - 1) // chunk_size
+            
+            # BLOQUES (Chunking)
+            for chunk_idx in range(total_chunks):
+                if not state["imputing"]: break
+                
+                inicio = chunk_idx * chunk_size
+                fin = inicio + chunk_size
+                bloque_actual = todas_estaciones[inicio:fin]
+                
+                log_radiactivo(f"\n==========================================")
+                log_radiactivo(f"🚀 INICIANDO BLOQUE {chunk_idx + 1} DE {total_chunks}")
+                log_radiactivo(f"==========================================")
+                
+                for idx, sid in enumerate(bloque_actual):
+                    if not state["imputing"]: break
+                    
+                    pb_interceptado.value = 0 
+                    log_radiactivo(f"--- [Bloque {chunk_idx + 1}] ESTACIÓN {sid} ({idx+1}/{len(bloque_actual)}) ---")
+
+                    try:
+                        def ui_progress(pct, msg):
+                            def _upd():
+                                if pct is not None: pb_interceptado.value = pct
+                                if msg is not None: 
+                                    pbl.value = f"[B:{chunk_idx+1}/{total_chunks}] {msg}"
+                                page.update()
+                            page.run_thread(_upd)
+
+                        df_res, log_msg = imputacion_logic.impute_target_station(
+                            sid, station_files, radius_km, global_range, 
+                            progress_callback=ui_progress, log_callback=log_radiactivo
+                        )
+                        
+                        if df_res is not None:
+                            # --- NUEVO: PERSISTENCIA DIRECTA A BASE DE DATOS (.GPKG) ---
+                            # Sin CSV ni Parquet, todo va al SQLite como fuente única de verdad.
+                            ruta_bd = page.session.get("ruta_bd_activa")
+                            if ruta_bd:
+                                imputacion_logic.guardar_en_sqlite_hds(df_res, sid, ruta_bd)
+                                print(f"📦 Estación {sid} inyectada en SQLite con éxito.")
+                                
+                            # AÑADIENDO FLAG "imputada = True" (Requisito Módulo 4)
+                            db_crudas[sid] = {
+                                "log_path": None,
+                                "imputada": True
+                            }
+                            log_radiactivo(f"✅ Estación {sid} completada.")
+                            
+                            del df_res, log_msg
+                    except Exception as ex:
+                        log_radiactivo(f"❌ Error crítico en {sid}: {ex}")
+                    
+                    import gc
+                    gc.collect()
+                
+                # Checkpointing por bloque
+                log_radiactivo(f"💾 Guardando progreso del Bloque {chunk_idx + 1} en memoria de sesión...")
+                page.session.set("db_series_crudas", db_crudas)
+                def _update_ui():
+                    render_visor_resultados()
+                page.run_thread(_update_ui)
+                
+                # Volcado automático a Disco Duro (Auto-Save .hds) para evitar colapso de RAM
+                current_project = page.session.get("current_project_path")
+                if current_project:
+                    log_radiactivo(f"💾 Volcando datos a Disco Duro (.hds) para liberar RAM...")
+                    try:
+                        session_dict = {}
+                        BLACKLIST_KEYS = ["catalogo_conagua", "df_estaciones_nacionales", "db_climatologica_masiva"]
+                        for k in page.session.get_keys():
+                            val = page.session.get(k)
+                            if callable(val) or isinstance(val, ft.Control) or "flet" in type(val).__module__: continue
+                            if k in BLACKLIST_KEYS: continue
+                            session_dict[k] = val
+                            
+                        from infrastructure.project_manager import project_manager_instance
+                        project_manager_instance.save_project(current_project, session_dict)
+                        del session_dict
+                        log_radiactivo(f"✅ Volcado a disco completado.")
+                    except Exception as ev:
+                        log_radiactivo(f"⚠️ Aviso: Error al guardar .hds automático: {ev}")
+
+                # Enfriamiento Térmico (Yielding)
+                import time
+                time.sleep(2)
+                import gc
+                gc.collect()
+
+            # FIN BATCH
+            def _finalize_batch():
+                page.session.set("db_series_crudas", db_crudas)
+                page.session.set("cola_imputacion", [])
+                
+                out_folder = page.session.get("imput_output_folder")
+                if out_folder and os.path.exists(out_folder):
+                    page.session.set("txt_backup_imputados", {"__type__": "folder_backup", "path": out_folder})
+                
+                render_cola_visual()
+                render_visor_resultados()
+                
+                bloqueo_radiactivo.visible = False
+                page.window.prevent_close = False
+                main_rail = page.session.get("main_rail")
+                if main_rail: main_rail.disabled = False
+                
+                state["imputing"] = False
+                page.update()
+                page.snack_bar = ft.SnackBar(ft.Text("✅ IMPUTACIÓN MASIVA COMPLETADA"), bgcolor="green", open=True)
                 page.update()
             page.run_thread(_finalize_batch)
 
@@ -391,6 +680,8 @@ def build_imputacion_view(page: ft.Page):
     
     open_map_button = ft.ElevatedButton("Ver Mapa", icon=ft.Icons.MAP, disabled=True, 
                                        on_click=lambda _: webbrowser.open(page.session.get("imput_map_path").get("path") if isinstance(page.session.get("imput_map_path"), dict) else page.session.get("imput_map_path")))
+    export_thiessen_button = ft.ElevatedButton("Exportar Thiessen (SHP)", icon=ft.Icons.MAP_OUTLINED, disabled=True,
+                                               on_click=lambda _: picker_exportar_thiessen.save_file(file_name="Thiessen_Estaciones.shp", allowed_extensions=["shp"]))
     
     # --- BUSCADOR Y CONTENEDOR DE TARJETAS ---
     search_station_input = ft.TextField(
@@ -404,6 +695,18 @@ def build_imputacion_view(page: ft.Page):
     station_files_container = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
 
     impute_button = ft.ElevatedButton("Iniciar Lote", icon=ft.Icons.PLAY_ARROW, on_click=on_click_impute, bgcolor=COLOR_ACENTO, color="black")
+    
+    area_c = page.session.get("area_cuenca_km2") or 0.0
+    impute_masiva_button = ft.ElevatedButton(
+        "🚀 IMPUTACIÓN MASIVA", 
+        icon=ft.Icons.ROCKET_LAUNCH, 
+        on_click=on_click_impute_masiva, 
+        bgcolor="orange", 
+        color="black",
+        disabled=(area_c <= 25),
+        tooltip="Disponible solo para cuencas > 25 km²" if area_c <= 25 else "Procesa todas las estaciones por bloques"
+    )
+
     detener_button = ft.ElevatedButton("Detener", icon=ft.Icons.STOP, visible=False, on_click=abort_imputation, bgcolor="red", color="white")
 
     # ==========================================
@@ -411,7 +714,7 @@ def build_imputacion_view(page: ft.Page):
     # ==========================================
     view_fuente = ft.Container(content=ft.Column([
         ft.Text("1. Carpeta de Datos", size=18, weight="bold", color=COLOR_ACENTO),
-        ft.Row([ft.ElevatedButton("Seleccionar Fuente", icon=ft.Icons.FOLDER, on_click=lambda _: file_picker_input.get_directory_path()), open_map_button]),
+        ft.Row([ft.ElevatedButton("Seleccionar Fuente", icon=ft.Icons.FOLDER, on_click=lambda _: file_picker_input.get_directory_path()), open_map_button, export_thiessen_button]),
         selected_input_folder, station_count_text,
         ft.Divider(),
         search_station_input,
@@ -426,7 +729,7 @@ def build_imputacion_view(page: ft.Page):
         ft.Divider(),
         ft.Text("Cola de Trabajo:"),
         cola_espera_ui,
-        ft.Row([impute_button], alignment=ft.MainAxisAlignment.CENTER)
+        ft.Row([impute_button, impute_masiva_button], alignment=ft.MainAxisAlignment.CENTER)
     ], scroll=ft.ScrollMode.AUTO), padding=20, expand=True)
 
     view_exec = ft.Container(content=ft.Column([
@@ -534,6 +837,12 @@ def build_imputacion_view(page: ft.Page):
                 # Escenario 2: Ya estaban leídos (Ej. si regresaste de otra pestaña)
                 selected_input_folder.value = f"Fuente Activa: {ruta_en_memoria}"
                 open_map_button.disabled = False if page.session.get("imput_map_path") else True
+                export_thiessen_button.disabled = False
+                
+                area_c = page.session.get("area_cuenca_km2") or 0.0
+                impute_masiva_button.disabled = (area_c <= 25)
+                impute_masiva_button.tooltip = "Disponible solo para cuencas > 25 km²" if area_c <= 25 else "Procesa todas las estaciones por bloques"
+                
                 restore_station_ui(estaciones_actuales)
                 
     # Lanzamos el gatillo asíncrono

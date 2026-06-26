@@ -73,7 +73,7 @@ class MatrixButton(ft.Container):
 
 class TerminalHeader(ft.Container):
     """Encabezado de Terminal estándar para las vistas."""
-    def __init__(self, version="10.5.2"):
+    def __init__(self, version="11"):
         super().__init__()
         self.content = ft.Column([
             ft.Text(f">>> HyDaS v{version}", color=COLOR_ACENTO, size=22, font_family=FUENTE_PRINCIPAL),

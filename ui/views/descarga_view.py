@@ -6,11 +6,15 @@ import asyncio
 
 # --- ARQUITECTURA HEXAGONAL: Importación desde el Core ---
 from core import descarga_logic
+from core.analisis_espacial import MotorEspacial
+from core.descarga_logic import GestorExtraccion
 
 def build_descarga_view(page: ft.Page):
     
     # --- 1. VARIABLES DE SESIÓN (Protegidas) ---
-    modo_actual = ft.Text("POR ESTADO", color="#00ff41", weight="bold", size=16)
+    cuenca_cargada = page.session.get("cuenca_geojson") is not None
+    modo_inicial = "CUENCA OBJETIVO" if cuenca_cargada else "POR ESTADO"
+    modo_actual = ft.Text(modo_inicial, color="#00ff41", weight="bold", size=16)
     elementos_seleccionados = [] 
     poligonos_cargados = [] 
     estados_auditados = {}
@@ -22,8 +26,90 @@ def build_descarga_view(page: ft.Page):
     terminal_list = ft.ListView(expand=True, spacing=5, auto_scroll=True)
     progreso_bar = ft.ProgressBar(width=None, color="#00ff41", bgcolor="#1a1a1a", value=0, visible=False)
     
-    lbl_bd_activa = ft.Text(f"BD: {ruta_bd_activa if ruta_bd_activa else 'NINGUNA (Requiere Vinculación)'}", color="#00ff41" if ruta_bd_activa else "grey", size=10, selectable=True)
-    lbl_indice_status = ft.Text(f"Índice HDS: {'Activo en memoria' if indice_activo is not None else 'Vacío'}", color="#00ff41" if indice_activo is not None else "red", size=10)
+    lbl_bd_activa = ft.Text(f"BD: {os.path.basename(ruta_bd_activa) if ruta_bd_activa else 'NINGUNA (Requiere Vinculación)'}", color="#00ff41" if ruta_bd_activa else "grey", size=10, selectable=True)
+    lbl_indice_status = ft.Text(f"Índice HDS: Activo ({len(indice_activo)} est.)" if indice_activo is not None else "Índice HDS: Vacío", color="#00ff41" if indice_activo is not None else "red", size=10)
+    
+    # Hidratación del Módulo 1 desde BD (.hds)
+    area_guardada = page.session.get("area_cuenca_km2")
+    arf_guardado = page.session.get("arf_activado")
+    estaciones_guardadas = page.session.get("total_estaciones_extraidas")
+    
+    lbl_area = ft.Text(f"Área: {area_guardada} km²" if area_guardada else "Área: N/A", color="#00ff41", weight="bold")
+    lbl_arf_status = ft.Text("Módulo 4 (ARF): HABILITADO" if arf_guardado else ("Módulo 4 (ARF): NO REQUIERE" if arf_guardado is False else "Módulo ARF: INACTIVO"), color="#00ff41" if arf_guardado else ("orange" if arf_guardado is False else "grey"))
+    lbl_estaciones = ft.Text(f"Estaciones en Rango: {estaciones_guardadas}" if estaciones_guardadas is not None else "Estaciones en Rango: 0", color="white")
+    
+    progreso_espacial = ft.ProgressRing(visible=False, color="#00ff41", width=20, height=20)
+
+    def procesar_shapefile_tarea(ruta_shp_original):
+        try:
+            # 1. NO COPIAR EL SHP. Leer directamente de la ruta original.
+            # Esto garantiza que Geopandas lea los archivos .prj y .shx hermanos.
+            resultado = MotorEspacial.procesar_cuenca_objetivo(ruta_shp_original, buffer_km=100)
+            
+            df_cat = page.session.get("indice_bd_local")
+            claves = []
+            
+            if df_cat is not None and not df_cat.empty:
+                claves = GestorExtraccion.filtrar_estaciones_por_buffer(resultado["buffer_geom"], df_cat)
+            
+            # 2. Inyección en sesión
+            page.session.set("cuenca_activa_ruta", ruta_shp_original)
+            page.session.set("claves_objetivo", claves)
+            page.session.set("arf_activado", resultado["arf_activado"])
+            page.session.set("area_cuenca_km2", resultado["area_km2"])
+            page.session.set("cuenca_geojson", resultado["cuenca_geojson"])
+            page.session.set("buffer_geojson", resultado["buffer_geojson"])
+            page.session.set("cuenca_bbox", resultado["bbox"]) 
+            page.session.set("total_estaciones_extraidas", len(claves))
+            
+            # 3. Actualizar Textos de la UI
+            lbl_area.value = f"Área: {resultado['area_km2']} km²"
+            lbl_estaciones.value = f"Estaciones en Rango: {len(claves)}"
+            if resultado["arf_activado"]:
+                lbl_arf_status.value = "Módulo 4 (ARF): HABILITADO"
+                lbl_arf_status.color = "#00ff41"
+            else:
+                lbl_arf_status.value = "Módulo 4 (ARF): NO REQUIERE"
+                lbl_arf_status.color = "orange"
+                
+            page.snack_bar = ft.SnackBar(ft.Text(f"Éxito: {len(claves)} estaciones encontradas."), bgcolor="#00ff41")
+            
+            # 4. REDIBUJAR MAPA AUTOMÁTICAMENTE (¡Esto faltaba!)
+            # Cambiamos el modo directamente y ejecutamos las funciones de zoom y render
+            # El zoom ya está auto-incluido en dibujar_mapa() cuando el modo es CUENCA OBJETIVO
+            
+            def _refresh_map():
+                modo_actual.value = "CUENCA OBJETIVO"
+                dibujar_mapa()
+                page.update()
+                
+            page.run_thread(_refresh_map)
+            
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            page.snack_bar = ft.SnackBar(ft.Text(f"Error Espacial: {str(e)}"), bgcolor="#cc0000")
+        finally:
+            progreso_espacial.visible = False
+            page.snack_bar.open = True
+            page.update()
+
+    def on_shp_selected(e: ft.FilePickerResultEvent):
+        if e.files:
+            progreso_espacial.visible = True
+            page.update()
+            ruta_shp = e.files[0].path
+            # IMPORTANTE: Ejecutar en background para no congelar la UI
+            page.run_thread(procesar_shapefile_tarea, ruta_shp)
+
+    shp_picker = ft.FilePicker(on_result=on_shp_selected)
+    page.overlay.append(shp_picker)
+
+    btn_cuenca_objetivo = ft.OutlinedButton(
+        "CUENCA OBJETIVO (SHP)",
+        icon=ft.Icons.MAP_OUTLINED,
+        on_click=lambda _: shp_picker.pick_files(allowed_extensions=["shp"]),
+        style=ft.ButtonStyle(color="white")
+    )
 
     def log_terminal(mensaje):
         def _update():
@@ -101,6 +187,7 @@ def build_descarga_view(page: ft.Page):
     # --- 3. BOTONES DE CONTROL ---
     btn_modo_estado = ft.TextButton("🗺️ POR ESTADO", on_click=lambda e: cambiar_modo(e, "POR ESTADO"), style=ft.ButtonStyle(color="#00ff41"))
     btn_modo_cuenca = ft.TextButton("🌊 POR CUENCA", on_click=lambda e: cambiar_modo(e, "POR CUENCA"), style=ft.ButtonStyle(color="#00ff41"))
+    btn_modo_cuenca_obj = ft.TextButton("🎯 CUENCA OBJETIVO", on_click=lambda e: cambiar_modo(e, "CUENCA OBJETIVO"), style=ft.ButtonStyle(color="#00ff41"))
     btn_modo_masivo = ft.TextButton("📦 RESPALDO MASIVO", on_click=lambda e: cambiar_modo(e, "RESPALDO MASIVO"), style=ft.ButtonStyle(color="#1c75fa"))
     
     # --- MOTOR DE AUDITORÍA Y PICKERS ---
@@ -157,7 +244,9 @@ def build_descarga_view(page: ft.Page):
 
     btn_iniciar = ft.ElevatedButton("INICIAR EXTRACCIÓN", color="#050505", bgcolor="#00ff41", icon=ft.Icons.CLOUD_DOWNLOAD, on_click=on_iniciar_click)
     btn_detener = ft.ElevatedButton("DETENER", color="white", bgcolor="#cc0000", icon=ft.Icons.STOP, visible=False, on_click=lambda e: detener_proceso(e))
-    btn_puente = ft.ElevatedButton("IR A IMPUTACIÓN", color="white", bgcolor="#1c75fa", icon=ft.Icons.ARROW_FORWARD, visible=False, on_click=saltar_a_imputacion)
+    # Hidratación del botón de avance
+    puente_visible = page.session.get("imput_folder_path") is not None
+    btn_puente = ft.ElevatedButton("IR A IMPUTACIÓN", color="white", bgcolor="#1c75fa", icon=ft.Icons.ARROW_FORWARD, visible=puente_visible, on_click=saltar_a_imputacion)
     # Botón de Inspección
     btn_inspeccionar = ft.ElevatedButton("🔍 INSPECCIONAR ZONA", color="white", bgcolor="#9900ff", visible=True, on_click=lambda e: abrir_visor_flotante())
 
@@ -234,6 +323,8 @@ def build_descarga_view(page: ft.Page):
         # 1. Controles Locales
         btn_modo_estado.disabled = bloquear
         btn_modo_cuenca.disabled = bloquear
+        btn_modo_cuenca_obj.disabled = bloquear
+        btn_cuenca_objetivo.disabled = bloquear
         btn_modo_masivo.disabled = bloquear
         
         # NUEVOS BOTONES IN-MEMORY (Reemplazan a btn_cambiar_dir)
@@ -283,14 +374,29 @@ def build_descarga_view(page: ft.Page):
         mapa_canvas.shapes.clear()
         try:
             nonlocal poligonos_cargados
-            tipo_geometria = "POR ESTADO" if modo_actual.value == "RESPALDO MASIVO" else modo_actual.value
             
-            if not poligonos_cargados:
-                poligonos_cargados = descarga_logic.cargar_poligonos(tipo_geometria)
-
+            # 1. Determinar el BBOX dinámico para Zoom
             b = descarga_logic.BBOX_MEXICO
+            if modo_actual.value == "CUENCA OBJETIVO" and page.session.get("cuenca_bbox"):
+                cb = page.session.get("cuenca_bbox") # [minx, miny, maxx, maxy]
+                margen_x = max((cb[2] - cb[0]) * 0.1, 0.01)
+                margen_y = max((cb[3] - cb[1]) * 0.1, 0.01)
+                b = {
+                    "min_x": cb[0] - margen_x,
+                    "max_x": cb[2] + margen_x,
+                    "min_y": cb[1] - margen_y,
+                    "max_y": cb[3] + margen_y
+                }
+
             # Aplicación de la matriz dinámica a escala
             scale_x, scale_y = map_dim["w"] / (b["max_x"] - b["min_x"]), map_dim["h"] / (b["max_y"] - b["min_y"])
+
+            # 2. Dibujar fondo (Estados o Cuencas generales)
+            tipo_fondo = "POR ESTADO" if modo_actual.value in ["RESPALDO MASIVO", "CUENCA OBJETIVO"] else modo_actual.value
+            
+            if not poligonos_cargados or page.session.get("ultimo_tipo_cargado") != tipo_fondo:
+                poligonos_cargados = descarga_logic.cargar_poligonos(tipo_fondo)
+                page.session.set("ultimo_tipo_cargado", tipo_fondo)
 
             for pol in poligonos_cargados:
                 geo = pol["geometria"]
@@ -302,6 +408,10 @@ def build_descarga_view(page: ft.Page):
                     alfa_hex = f"{int(pct_avance * 153):02x}"
                     color_fill, color_stroke = (f"#{alfa_hex}00ff41" if pct_avance > 0 else "#000000"), ("#00ff41" if pct_avance >= 1.0 else "#004411")
                 
+                elif modo_actual.value == "CUENCA OBJETIVO":
+                    # Estados de fondo 100% transparentes (solo el contorno visible)
+                    color_fill, color_stroke = None, "#004411"
+                    
                 elif modo_actual.value in ["AUDITORÍA", "AUDITORÍA PROFUNDA"]:
                     clave_corta = descarga_logic.obtener_clave_estado(nombre_poligono).upper()
                     tiene_datos = estados_auditados.get(clave_corta, False)
@@ -319,18 +429,62 @@ def build_descarga_view(page: ft.Page):
                         px, py = (lon - b["min_x"]) * scale_x, (b["max_y"] - lat) * scale_y 
                         path_elements.append(cv.Path.MoveTo(px, py) if idx == 0 else cv.Path.LineTo(px, py))
                     path_elements.append(cv.Path.Close())
-                    mapa_canvas.shapes.extend([cv.Path(elements=path_elements, paint=ft.Paint(color=color_fill, style=ft.PaintingStyle.FILL)), cv.Path(elements=path_elements, paint=ft.Paint(color=color_stroke, style=ft.PaintingStyle.STROKE, stroke_width=1))])
+                    if color_fill:
+                        mapa_canvas.shapes.append(cv.Path(elements=path_elements, paint=ft.Paint(color=color_fill, style=ft.PaintingStyle.FILL)))
+                    if color_stroke:
+                        mapa_canvas.shapes.append(cv.Path(elements=path_elements, paint=ft.Paint(color=color_stroke, style=ft.PaintingStyle.STROKE, stroke_width=1)))
                 
                 if modo_actual.value == "RESPALDO MASIVO" and pct_avance > 0:
                     centroide = pol["shapely_obj"].centroid
                     cx, cy = (centroide.x - b["min_x"]) * scale_x, (b["max_y"] - centroide.y) * scale_y 
                     mapa_canvas.shapes.append(cv.Text(x=cx - 10, y=cy + 5, text=f"{int(pct_avance * 100)}%", style=ft.TextStyle(size=10, weight="bold", color="#ffffff" if pct_avance >= 1.0 else "#00ff41", font_family="Roboto Mono")))
+
+            # 3. Dibujar Capas Especiales (Geometrías Inyectadas)
+            if modo_actual.value == "CUENCA OBJETIVO" and page.session.get("cuenca_geojson"):
+                def dibujar_geojson(geo_dict, color_fill, color_stroke, stroke_width=1):
+                    if not geo_dict: return
+                    
+                    # HERENCIA LÉXICA: Usamos 'b', 'scale_x', y 'scale_y' calculados por el padre (dibujar_mapa)
+                    # Esto garantiza que el polígono UTM coincida exactamente con el mapa base.
+                    coords_list = [geo_dict["coordinates"]] if geo_dict["type"] == "Polygon" else geo_dict["coordinates"]
+                    for pol_rings in coords_list:
+                        for anillo in pol_rings:
+                            path_elements = []
+                            for idx, (lon, lat) in enumerate(anillo):
+                                px, py = (lon - b["min_x"]) * scale_x, (b["max_y"] - lat) * scale_y 
+                                path_elements.append(cv.Path.MoveTo(px, py) if idx == 0 else cv.Path.LineTo(px, py))
+                            path_elements.append(cv.Path.Close())
+                            
+                            if color_fill:
+                                mapa_canvas.shapes.append(cv.Path(elements=path_elements, paint=ft.Paint(color=color_fill, style=ft.PaintingStyle.FILL)))
+                            if color_stroke:
+                                mapa_canvas.shapes.append(cv.Path(elements=path_elements, paint=ft.Paint(color=color_stroke, style=ft.PaintingStyle.STROKE, stroke_width=stroke_width)))
+                
+                dibujar_geojson(page.session.get("buffer_geojson"), color_fill=None, color_stroke="#cc0000", stroke_width=2)
+                dibujar_geojson(page.session.get("cuenca_geojson"), color_fill="#6600ff41", color_stroke="#00ff41", stroke_width=1.5)
+
             page.update()
-        except Exception: pass
+        except Exception as e: 
+            print(f"Error en dibujar mapa: {e}")
+            pass
 
     # --- 5. GESTOR DE EVENTOS ---
     def on_mapa_click(e):
         if modo_actual.value in ["RESPALDO MASIVO", "AUDITORÍA"] or btn_detener.visible: return
+        
+        if modo_actual.value == "CUENCA OBJETIVO":
+            claves_obj = page.session.get("claves_objetivo")
+            ruta_shp = page.session.get("cuenca_activa_ruta")
+            if claves_obj is not None:
+                log_terminal("> [INFO] Cuenca Objetivo seleccionada en el mapa.")
+                if ruta_shp:
+                    import os
+                    nombre_shp = os.path.basename(ruta_shp)
+                    log_terminal(f"> [+] Seleccionado automáticamente: {nombre_shp}")
+                log_terminal(f"> 🎯 Buffer activo con {len(claves_obj)} estaciones listas.")
+                log_terminal("> ✅ Presiona 'INICIAR EXTRACCIÓN' para descomprimirlas.")
+            return
+
         b = descarga_logic.BBOX_MEXICO
         # Aplicación de matriz inversa para la detección geoespacial estricta
         scale_x, scale_y = map_dim["w"] / (b["max_x"] - b["min_x"]), map_dim["h"] / (b["max_y"] - b["min_y"])
@@ -361,7 +515,17 @@ def build_descarga_view(page: ft.Page):
             espacio_w = max(400, pw - 320) # 250px panel izq + paddings
             espacio_h = max(250, (ph - 150) * 0.6) # Aproximadamente el 60% para el lienzo
             
+            # Determinamos el Aspect Ratio BBOX
             b = descarga_logic.BBOX_MEXICO
+            if modo_actual.value == "CUENCA OBJETIVO" and page.session.get("cuenca_bbox"):
+                cb = page.session.get("cuenca_bbox")
+                margen_x = max((cb[2] - cb[0]) * 0.1, 0.01)
+                margen_y = max((cb[3] - cb[1]) * 0.1, 0.01)
+                b = {
+                    "min_x": cb[0] - margen_x, "max_x": cb[2] + margen_x,
+                    "min_y": cb[1] - margen_y, "max_y": cb[3] + margen_y
+                }
+                
             aspect_ratio = (b["max_x"] - b["min_x"]) / (b["max_y"] - b["min_y"])
             
             # Restricción 'Fit to Contain' pura
@@ -386,8 +550,15 @@ def build_descarga_view(page: ft.Page):
     page.on_resized = ajustar_zoom_mapa
 
     def cambiar_modo(e, nuevo_modo):
-        modo_actual.value = nuevo_modo; elementos_seleccionados.clear(); poligonos_cargados.clear()
-        log_terminal(f"> ---------------------------------\n> MODO DE EXTRACCIÓN: {nuevo_modo}")
+        modo_actual.value = nuevo_modo; elementos_seleccionados.clear();
+        # Si NO es modo cuenca objetivo, limpiamos el caché de cuenca para volver al BBOX nacional
+        if nuevo_modo != "CUENCA OBJETIVO":
+            # No borramos el file de disco ni el session_get(cuenca_activa_ruta), 
+            # solo re-ajustamos la vista borrando el poligonos_cargados para forzar recarga.
+            poligonos_cargados.clear()
+        
+        log_terminal(f"> ---------------------------------\n> MODO DE VISUALIZACIÓN: {nuevo_modo}")
+        ajustar_zoom_mapa() # Ajustamos la matriz de proyección (Zoom In / Zoom Out)
         dibujar_mapa()
 
     # --- 6. HILO DE EJECUCIÓN ---
@@ -398,8 +569,29 @@ def build_descarga_view(page: ft.Page):
         page.update()
 
     def run_extraction_thread(ruta_target):
-        if not elementos_seleccionados and modo_actual.value != "RESPALDO MASIVO":
+        if not elementos_seleccionados and modo_actual.value not in ["RESPALDO MASIVO", "CUENCA OBJETIVO"]:
             log_terminal("> [ERROR] SELECCIONE AL MENOS UNA ZONA."); return
+            
+        # Si es Cuenca Objetivo, usamos la lista de estaciones previamente calculadas en memoria
+        if modo_actual.value == "CUENCA OBJETIVO":
+            claves_obj = page.session.get("claves_objetivo")
+            buffer_geom = page.session.get("buffer_geom")
+            df_cat = page.session.get("indice_bd_local")
+            
+            # --- CORRECCIÓN CRÍTICA: Auto-recálculo si la BD se vinculó DESPUÉS de subir el SHP ---
+            if (not claves_obj or len(claves_obj) == 0) and buffer_geom is not None and df_cat is not None:
+                log_terminal("> [SISTEMA] Sincronizando cruce espacial (BD vinculada posterior al SHP)...")
+                claves_obj = descarga_logic.GestorExtraccion.filtrar_estaciones_por_buffer(buffer_geom, df_cat)
+                page.session.set("claves_objetivo", claves_obj)
+                
+            if not claves_obj:
+                log_terminal("> [ERROR] No hay estaciones dentro del buffer. Asegúrate de tener una BD vinculada.")
+                return
+            
+            # Falsificamos 'elementos_seleccionados' con las claves de estaciones para el motor
+            elementos_seleccionados_temp = claves_obj
+        else:
+            elementos_seleccionados_temp = elementos_seleccionados
             
         progreso_bar.visible = True
         progreso_bar.value = 0 
@@ -411,7 +603,7 @@ def build_descarga_view(page: ft.Page):
                 df_cat = page.session.get("indice_bd_local")
                 
                 ruta_final, df_generado = descarga_logic.procesar_descarga(
-                    modo_actual.value, elementos_seleccionados, ruta_target, df_cat,
+                    modo_actual.value, elementos_seleccionados_temp, ruta_target, df_cat,
                     log_terminal, update_progreso, callback_mapa=dibujar_mapa,
                     carpeta_previa=ruta_activa_sesion 
                 )
@@ -457,12 +649,19 @@ def build_descarga_view(page: ft.Page):
                 content=ft.Column([
                     ft.Text("EXTRACCIÓN", size=18, weight="bold"),
                     ft.Divider(color="#222222"),
-                    ft.Text("MÉTODO DE SELECCIÓN", color="white", size=10, weight="bold"),
-                    btn_modo_estado, btn_modo_cuenca, btn_modo_masivo,btn_auditar,
+                    btn_vincular_bd, btn_exportar_csv, btn_cuenca_objetivo,
                     ft.Divider(color="#222222"),
-                    ft.Text("BASE DE DATOS MAESTRA", color="white", size=10, weight="bold"),
+                    ft.Text("MÉTODOS DE SELECCIÓN", color="white", size=10, weight="bold"),
+                    btn_modo_estado, btn_modo_cuenca, btn_modo_cuenca_obj,
+                    ft.Divider(color="#222222"),
+                    ft.Text("DB CONTROL", color="white", size=10, weight="bold"),
+                    btn_modo_masivo, btn_auditar,
+                    ft.Divider(color="#222222"),
+                    ft.Text("ESTATUS DE PROCESOS", color="white", size=10, weight="bold"),
+                    progreso_espacial, lbl_area, lbl_arf_status, lbl_estaciones,
+                    ft.Divider(color="#222222"),
+                    ft.Text("ESTADO DE BASE DE DATOS", color="white", size=10, weight="bold"),
                     lbl_bd_activa, lbl_indice_status,
-                    btn_vincular_bd, btn_exportar_csv,
                 ], spacing=15, scroll=ft.ScrollMode.AUTO),
                 width=250, padding=20, border=ft.border.only(right=ft.border.BorderSide(1, "#222222"))
             ),
@@ -474,8 +673,10 @@ def build_descarga_view(page: ft.Page):
                                 ft.Row([ft.Text("MAPA GEOESPACIAL: ", color="white", weight="bold"), modo_actual]),
                                 ft.Row([btn_inspeccionar, btn_iniciar, btn_detener, btn_puente])
                             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                            contenedor_mapa,
-                            ft.Text("Modo Normal: Clic para seleccionar | Modo Masivo: Monitor de progreso.", color="grey", size=11, italic=True)
+                            ft.Stack([
+                                contenedor_mapa
+                            ], expand=True),
+                            ft.Text("Modo Normal: Clic para seleccionar | SHP: Calcula Buffer UTM 100km.", color="grey", size=11, italic=True)
                         ]), expand=5, padding=20
                     ),
                     ft.Divider(color="#222222", height=1),

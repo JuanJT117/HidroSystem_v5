@@ -13,12 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import shapefile 
 from shapely.geometry import shape, Point 
 import shutil
-
-import datetime, re, io
-import matplotlib
-import matplotlib.pyplot as plt
-import seaborn as sns
-matplotlib.use('Agg')
+import geopandas as gpd
 from core import generador_pdf
 
 # --- 1. RESOLUCIÓN ABSOLUTA DE RUTAS (DevSecOps & PyInstaller) ---
@@ -84,6 +79,47 @@ def obtener_clave_estado(nombre_shp):
             
     return ""
 
+class GestorExtraccion:
+    @staticmethod
+    def filtrar_estaciones_por_buffer(buffer_geom, df_estaciones: pd.DataFrame) -> list:
+        try:
+            if df_estaciones is None or df_estaciones.empty: return []
+            
+            df_limpio = df_estaciones.dropna(subset=['lat', 'lon']).copy()
+            
+            # --- LIMPIEZA AGRESIVA CON REGEX ---
+            df_limpio['lat'] = df_limpio['lat'].astype(str).str.replace(',', '.')
+            df_limpio['lon'] = df_limpio['lon'].astype(str).str.replace(',', '.')
+            
+            # Extrae SÓLO el número, ignorando letras (N, W) u otros caracteres corruptos
+            df_limpio['lat'] = pd.to_numeric(df_limpio['lat'].str.extract(r'(-?\d+(?:\.\d+)?)')[0], errors='coerce')
+            df_limpio['lon'] = pd.to_numeric(df_limpio['lon'].str.extract(r'(-?\d+(?:\.\d+)?)')[0], errors='coerce')
+            df_limpio = df_limpio.dropna(subset=['lat', 'lon'])
+            
+            if df_limpio.empty: return []
+
+            # Adaptación Métrica o Geográfica
+            max_lon_abs = df_limpio['lon'].abs().max()
+            if max_lon_abs > 180:
+                estaciones_gdf = gpd.GeoDataFrame(df_limpio, geometry=gpd.points_from_xy(df_limpio['lon'], df_limpio['lat']), crs='EPSG:32614').to_crs('EPSG:4326')
+            else:
+                df_limpio['lon_real'] = df_limpio['lon'].apply(lambda x: x if x < 0 else -x)
+                df_limpio['lat_real'] = df_limpio['lat'].apply(lambda y: y if y > 0 else -y)
+                estaciones_gdf = gpd.GeoDataFrame(df_limpio, geometry=gpd.points_from_xy(df_limpio['lon_real'], df_limpio['lat_real']), crs='EPSG:4326')
+
+            # INTERSECCIÓN INQUEBRANTABLE
+            buffer_gs = gpd.GeoSeries([buffer_geom], crs="EPSG:4326")
+            mask = estaciones_gdf.geometry.intersects(buffer_gs.iloc[0])
+            estaciones_objetivo = estaciones_gdf[mask]
+            
+            claves = estaciones_objetivo['clave'].tolist()
+            print(f"[OK] [TLÁLOC] Motor Relacional completado. Estaciones detectadas: {len(claves)}")
+            return claves
+            
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(f'Fallo en motor georrelacional: {str(e)}')
+
 # --- 3. MOTOR ESPACIAL (Pyshp y Shapely) ---
 def cargar_poligonos(modo):
     """Lee los Shapefiles desde la carpeta assets según el modo seleccionado."""
@@ -104,11 +140,16 @@ def cargar_poligonos(modo):
         nombre = atr.get('ESTADO') or atr.get('NOM_CUENCA') or "Desconocido"
         id_pol = atr.get('ID_ESTADO') or atr.get('ID_CUENCA') or "0"
         
+        geom_real = shape(sr.shape.__geo_interface__)
+        # Simplificación EXTREMA para Flet (0.05 grados = ~5.5 km). 
+        # Preserve topology=False borra cientos de islas microscópicas que Flet no necesita.
+        geom_ligera = geom_real.simplify(0.05, preserve_topology=False)
+        
         poligonos.append({
             "id": str(id_pol),
             "nombre": nombre,
-            "geometria": sr.shape.__geo_interface__, 
-            "shapely_obj": shape(sr.shape.__geo_interface__) 
+            "geometria": geom_ligera.__geo_interface__, 
+            "shapely_obj": geom_real 
         })
         
     return poligonos
@@ -162,7 +203,7 @@ def descargar_y_procesar_estacion(url_archivo, clave_estado, poligonos_cuencas):
         try:
             # REGLA ZERO-TRUST: Simular latencia humana y usar Headers legítimos
             time.sleep(random.uniform(0.6, 1.5))
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) HidroSistem/10.5'}
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) HyDaS/11'}
             
             r = requests.get(url_archivo, headers=headers, timeout=30, verify=False)
             
@@ -232,8 +273,8 @@ def indexar_base_datos_tar(ruta_tar, poligonos_cuencas, callback_log, callback_p
                 f = tar.extractfile(miembro)
                 if not f: continue
                 
-                # REGLA ZERO-TRUST: Leer solo cabecera (400 bytes) para no colapsar la RAM
-                cabecera = f.read(400).decode('utf-8', errors='ignore')
+                # REGLA ZERO-TRUST: Leer solo cabecera (1000 bytes) para no colapsar la RAM pero asegurar que alcance LATITUD
+                cabecera = f.read(1000).decode('utf-8', errors='ignore')
                 meta = extraer_metadata(cabecera)
                 meta["clave"] = partes[1].replace('.txt', '').replace('dia', '')
                 meta["estado_origen"] = partes[0].upper()
@@ -354,7 +395,7 @@ def procesar_descarga(modo, elementos, ruta_tar_target, df_catalogo, callback_lo
                 
             return None, None
 
-        elif modo in ["POR ESTADO", "POR CUENCA"]:
+        elif modo in ["POR ESTADO", "POR CUENCA", "CUENCA OBJETIVO"]:
             callback_log(f"> ---------------------------------------")
             callback_log(f"> INICIANDO MOTOR DE EXTRACCIÓN LOCAL ({modo})")
             
@@ -379,12 +420,17 @@ def procesar_descarga(modo, elementos, ruta_tar_target, df_catalogo, callback_lo
                 for est_clave, cant in conteo.items():
                     nom_est = next((k for k, v in CATALOGO_ESTADOS_CONAGUA.items() if v.upper() == est_clave), est_clave)
                     callback_log(f"> 📍 {nom_est}: {cant} estaciones localizadas")
-            else: 
+            elif modo == "POR CUENCA": 
                 df_filtro = df_catalogo[df_catalogo['cuenca_nombre'].isin(elementos)]
                 callback_log("> --- RESUMEN DE SELECCIÓN ---")
                 conteo = df_filtro['cuenca_nombre'].value_counts()
                 for cue_nom, cant in conteo.items():
                     callback_log(f"> 🌊 Cuenca [{cue_nom}]: {cant} estaciones localizadas")
+            elif modo == "CUENCA OBJETIVO":
+                claves_str = [str(c) for c in elementos]
+                df_filtro = df_catalogo[df_catalogo['clave'].astype(str).isin(claves_str)]
+                callback_log("> --- RESUMEN DE SELECCIÓN ---")
+                callback_log(f"> 🎯 Cuenca Objetivo: {len(df_filtro)} estaciones dentro del Buffer.")
                 
             total_archivos = len(df_filtro)
             if total_archivos == 0:
@@ -396,6 +442,15 @@ def procesar_descarga(modo, elementos, ruta_tar_target, df_catalogo, callback_lo
             ruta_base = os.path.dirname(ruta_tar_target)
             carpeta_salida = os.path.join(ruta_base, "Tlaloc_Extraccion_Activa")
             os.makedirs(carpeta_salida, exist_ok=True)
+            
+            # --- PROTECCIÓN CONTRA DIRECTORIOS SUCIOS ---
+            # Purgamos los archivos viejos (ej. Tamaulipas) para que no se sumen a la nueva extracción
+            try:
+                for f in os.listdir(carpeta_salida):
+                    if f.endswith(".txt"): os.remove(os.path.join(carpeta_salida, f))
+            except Exception:
+                pass
+            # ---------------------------------------------
             
             if carpeta_previa and os.path.exists(carpeta_previa) and os.path.abspath(carpeta_previa) != os.path.abspath(carpeta_salida):
                 callback_log("> 📚 Sincronizando historial pluvial de la sesión actual...")
